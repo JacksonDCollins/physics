@@ -1,5 +1,4 @@
-//https://kylemayes.github.io/vulkanalia/drawing/framebuffers.html
-
+//https://kylemayes.github.io/vulkanalia/drawing/command_buffers.html#command-buffer-allocation
 #![allow(
     dead_code,
     unused_variables,

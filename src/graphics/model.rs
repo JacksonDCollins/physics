@@ -10,8 +10,48 @@ use vulkanalia::bytecode::Bytecode;
 use vulkanalia::prelude::v1_0::*;
 use winit::window::{Window, WindowBuilder};
 
+use super::texture;
 use super::Vertex;
 
+#[derive(Clone, Debug)]
+pub struct Wall {
+    pub model: Model,
+    pub texture: texture::Texture,
+    pub width: f32,
+}
+
+impl Wall {
+    pub unsafe fn new(
+        width: f32,
+        texture: texture::Texture,
+        instance: &Instance,
+        device: &Device,
+        physical_device: vk::PhysicalDevice,
+        command_pool: vk::CommandPool,
+        queue: vk::Queue,
+    ) -> Result<Self> {
+        Ok(Self {
+            model: Model::from_width(
+                width,
+                instance,
+                device,
+                physical_device,
+                command_pool,
+                queue,
+            )?,
+            texture,
+
+            width,
+        })
+    }
+
+    pub fn destroy(&self, logical_device: &Device) {
+        unsafe {
+            self.model.destroy(logical_device);
+            self.texture.destroy(logical_device);
+        }
+    }
+}
 #[derive(Clone, Debug, Default)]
 pub struct Model {
     pub indices: Vec<u32>,
@@ -23,6 +63,65 @@ pub struct Model {
 }
 
 impl Model {
+    pub unsafe fn from_width(
+        width: f32,
+        instance: &Instance,
+        device: &Device,
+        physical_device: vk::PhysicalDevice,
+        command_pool: vk::CommandPool,
+        queue: vk::Queue,
+    ) -> Result<Self> {
+        let indices = vec![0, 1, 2, 2, 3, 0];
+        let vertices = vec![
+            Vertex {
+                pos: crate::graphics::vec3(-width, -width, 0.0),
+                color: crate::graphics::vec3(1.0, 1.0, 1.0),
+                tex_coord: crate::graphics::vec2(0.0, 0.0),
+            },
+            Vertex {
+                pos: crate::graphics::vec3(width, -width, 0.0),
+                color: crate::graphics::vec3(1.0, 1.0, 1.0),
+                tex_coord: crate::graphics::vec2(1.0, 0.0),
+            },
+            Vertex {
+                pos: crate::graphics::vec3(width, width, 0.0),
+                color: crate::graphics::vec3(1.0, 1.0, 1.0),
+                tex_coord: crate::graphics::vec2(1.0, 1.0),
+            },
+            Vertex {
+                pos: crate::graphics::vec3(-width, width, 0.0),
+                color: crate::graphics::vec3(1.0, 1.0, 1.0),
+                tex_coord: crate::graphics::vec2(0.0, 1.0),
+            },
+        ];
+
+        let (vertex_buffer, vertex_buffer_memory) = create_vertex_buffer(
+            instance,
+            device,
+            physical_device,
+            command_pool,
+            queue,
+            &vertices,
+        )?;
+
+        let (index_buffer, index_buffer_memory) = create_index_buffer(
+            instance,
+            device,
+            physical_device,
+            command_pool,
+            queue,
+            &indices,
+        )?;
+
+        Ok(Self {
+            vertices,
+            indices,
+            vertex_buffer,
+            vertex_buffer_memory,
+            index_buffer,
+            index_buffer_memory,
+        })
+    }
     pub unsafe fn new(
         path: &str,
         instance: &Instance,
@@ -101,6 +200,13 @@ impl Model {
             index_buffer,
             index_buffer_memory,
         })
+    }
+
+    pub unsafe fn destroy(&self, logical_device: &Device) {
+        logical_device.destroy_buffer(self.vertex_buffer, None);
+        logical_device.free_memory(self.vertex_buffer_memory, None);
+        logical_device.destroy_buffer(self.index_buffer, None);
+        logical_device.free_memory(self.index_buffer_memory, None);
     }
 }
 

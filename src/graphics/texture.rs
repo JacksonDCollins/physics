@@ -144,4 +144,11 @@ impl Texture {
             texture_sampler,
         })
     }
+
+    pub unsafe fn destroy(&self, logical_device: &Device) {
+        logical_device.destroy_sampler(self.texture_sampler, None);
+        logical_device.destroy_image_view(self.texture_image_view, None);
+        logical_device.destroy_image(self.texture_image, None);
+        logical_device.free_memory(self.texture_image_memory, None);
+    }
 }

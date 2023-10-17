@@ -5,6 +5,7 @@
 //     clippy::too_many_arguments,
 //     clippy::unnecessary_wraps
 // )]
+#![allow(clippy::missing_safety_doc)]
 
 pub mod graphics;
 
@@ -27,10 +28,9 @@ use std::collections::HashSet;
 use std::ffi::CStr;
 use std::os::raw::c_void;
 
-
 use thiserror::Error;
 
-use vulkanalia::vk::{KhrSurfaceExtension, ExtDebugUtilsExtension};
+use vulkanalia::vk::{ExtDebugUtilsExtension, KhrSurfaceExtension};
 
 use vulkanalia::vk::KhrSwapchainExtension;
 
@@ -185,7 +185,7 @@ impl App {
             .wait_for_fences(&[self.data.in_flight_fences[self.frame]], true, u64::MAX)?;
 
         let result = self.device.acquire_next_image_khr(
-            *self.data.swapchain,
+            self.data.swapchain,
             u64::MAX,
             self.data.image_available_semaphores[self.frame],
             vk::Fence::null(),
@@ -234,7 +234,7 @@ impl App {
             self.data.in_flight_fences[self.frame],
         )?;
 
-        let swapchains = &[*self.data.swapchain];
+        let swapchains = &[self.data.swapchain];
         let image_indices = &[image_index as u32];
         let present_info = vk::PresentInfoKHR::builder()
             .wait_semaphores(signal_semaphores)
@@ -264,21 +264,10 @@ impl App {
     /// Destroys our Vulkan app.
     unsafe fn destroy(&mut self) {
         self.data.destroy(&self.device);
-        // self.destroy_swapchain();
 
-        // self.device.destroy_sampler(self.data.texture_sampler, None);
-        // self.device
-        //     .destroy_image_view(self.data.texture_image_view, None);
-        // self.device.destroy_image(self.data.texture_image, None);
-        // self.device
-        //     .free_memory(self.data.texture_image_memory, None);
-        // self.device
-        //     .destroy_descriptor_set_layout(self.data.descriptor_set_layout, None);
-        // self.device.destroy_buffer(self.data.index_buffer, None);
-        // self.device.free_memory(self.data.index_buffer_memory, None);
-        // self.device.destroy_buffer(self.data.vertex_buffer, None);
-        // self.device
-        //     .free_memory(self.data.vertex_buffer_memory, None);
+        self.device
+            .destroy_descriptor_set_layout(self.data.descriptor_set_layout, None);
+
         self.data
             .in_flight_fences
             .iter()
@@ -424,13 +413,13 @@ impl App {
         self.device.cmd_bind_vertex_buffers(
             command_buffer,
             0,
-            &[self.data.model.vertex_buffer],
+            &[self.data.wall.model.vertex_buffer],
             &[0],
         );
 
         self.device.cmd_bind_index_buffer(
             command_buffer,
-            self.data.model.index_buffer,
+            self.data.wall.model.index_buffer,
             0,
             vk::IndexType::UINT32,
         );
@@ -460,7 +449,7 @@ impl App {
 
         self.device.cmd_draw_indexed(
             command_buffer,
-            self.data.model.indices.len() as u32,
+            self.data.wall.model.indices.len() as u32,
             1,
             0,
             0,

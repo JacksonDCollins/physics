@@ -1,9 +1,8 @@
 pub mod model;
 pub mod texture;
 pub mod utils;
-pub mod vk_objects;
+// pub mod vk_objects;
 
-use vk_objects as vko;
 use std::fs::File;
 use std::mem::size_of;
 use std::time::Instant;
@@ -32,8 +31,6 @@ use crate::MAX_FRAMES_IN_FLIGHT;
 use std::hash::Hash;
 use std::hash::Hasher;
 
-use self::vko::Destroy;
-
 #[derive(Clone, Debug)]
 pub struct GraphicsData {
     pub surface: vk::SurfaceKHR,
@@ -43,7 +40,7 @@ pub struct GraphicsData {
     pub present_queue: vk::Queue,
     pub swapchain_format: vk::Format,
     pub swapchain_extent: vk::Extent2D,
-    pub swapchain: vko::SwapchainKHR,
+    pub swapchain: vk::SwapchainKHR,
     pub swapchain_images: Vec<vk::Image>,
     pub swapchain_image_views: Vec<vk::ImageView>,
     pub render_pass: vk::RenderPass,
@@ -63,14 +60,15 @@ pub struct GraphicsData {
     pub uniform_buffers_memory: Vec<vk::DeviceMemory>,
     pub descriptor_pool: vk::DescriptorPool,
     pub descriptor_sets: Vec<vk::DescriptorSet>,
-    pub texture_image: texture::Texture,
+    // pub texture_image: texture::Texture,
     pub depth_image: vk::Image,
     pub depth_image_memory: vk::DeviceMemory,
     pub depth_image_view: vk::ImageView,
     pub color_image: vk::Image,
     pub color_image_memory: vk::DeviceMemory,
     pub color_image_view: vk::ImageView,
-    pub model: model::Model,
+    // pub model: model::Model,
+    pub wall: model::Wall,
 }
 
 impl GraphicsData {
@@ -158,14 +156,24 @@ impl GraphicsData {
             graphics_queue,
         )?; //create_texture_image(&instance, logical_device_ref, &mut data)?;
 
-        let model = model::Model::new(
-            "resources/viking_room.obj",
+        // let model = model::Model::new(
+        //     "resources/viking_room.obj",
+        //     instance,
+        //     logical_device_ref,
+        //     physical_device,
+        //     command_pool,
+        //     graphics_queue,
+        // )?; //load_model(&mut data)?;
+
+        let wall = model::Wall::new(
+            2.0,
+            texture_image,
             instance,
-            logical_device_ref,
+            logical_device,
             physical_device,
             command_pool,
             graphics_queue,
-        )?; //load_model(&mut data)?;
+        )?;
 
         let (uniform_buffers, uniform_buffers_memory) =
             crate::graphics::utils::create_uniform_buffers(
@@ -184,7 +192,7 @@ impl GraphicsData {
             &swapchain_images,
             descriptor_pool,
             &uniform_buffers,
-            &texture_image,
+            &wall.texture,
         )?;
 
         let (command_buffers, secondary_command_buffers) =
@@ -228,7 +236,7 @@ impl GraphicsData {
             uniform_buffers,
             descriptor_pool,
             descriptor_sets,
-            texture_image,
+            // texture_image,
             depth_image,
             depth_image_memory,
             depth_image_view,
@@ -236,7 +244,7 @@ impl GraphicsData {
             color_image_memory,
             color_image_view,
             uniform_buffers_memory,
-            model,
+            wall,
         })
     }
 
@@ -273,7 +281,7 @@ impl GraphicsData {
             self.msaa_samples,
         )?;
         (self.pipeline_layout, self.pipeline) = crate::graphics::utils::create_pipeline(
-              logical_device,
+            logical_device,
             self.swapchain_extent,
             self.msaa_samples,
             self.descriptor_set_layout,
@@ -285,7 +293,7 @@ impl GraphicsData {
             self.color_image_view,
         ) = crate::graphics::utils::create_color_objects(
             instance,
-              logical_device,
+            logical_device,
             self.physical_device,
             self.swapchain_extent,
             self.msaa_samples,
@@ -297,7 +305,7 @@ impl GraphicsData {
             self.depth_image_view,
         ) = crate::graphics::utils::create_depth_objects(
             instance,
-             logical_device,
+            logical_device,
             self.physical_device,
             self.swapchain_extent,
             self.msaa_samples,
@@ -305,7 +313,7 @@ impl GraphicsData {
             self.graphics_queue,
         )?;
         self.framebuffers = crate::graphics::utils::create_framebuffers(
-               logical_device,
+            logical_device,
             &self.swapchain_image_views,
             self.color_image_view,
             self.depth_image_view,
@@ -315,7 +323,7 @@ impl GraphicsData {
         (self.uniform_buffers, self.uniform_buffers_memory) =
             crate::graphics::utils::create_uniform_buffers(
                 instance,
-                 logical_device,
+                logical_device,
                 self.physical_device,
                 &self.swapchain_images,
             )?;
@@ -323,12 +331,12 @@ impl GraphicsData {
             crate::graphics::utils::create_descriptor_pool(logical_device, &self.swapchain_images)?;
 
         self.descriptor_sets = crate::graphics::utils::create_descriptor_sets(
-             logical_device,
+            logical_device,
             self.descriptor_set_layout,
             &self.swapchain_images,
             self.descriptor_pool,
             &self.uniform_buffers,
-            &self.texture_image,
+            &self.wall.texture,
         )?;
         (self.command_buffers, self.secondary_command_buffers) =
             crate::graphics::utils::create_command_buffers(
@@ -343,37 +351,29 @@ impl GraphicsData {
     }
 
     unsafe fn destroy_swapchain(&mut self, logical_device: &Device) {
-        // self.device
-        //     .destroy_image_view(self.data.color_image_view, None);
-        // self.device.free_memory(self.data.color_image_memory, None);
-        // self.device.destroy_image(self.data.color_image, None);
-        // self.device
-        //     .destroy_image_view(self.data.depth_image_view, None);
-        // self.device.free_memory(self.data.depth_image_memory, None);
-        // self.device.destroy_image(self.data.depth_image, None);
-        // self.device
-        //     .destroy_descriptor_pool(self.data.descriptor_pool, None);
-        // self.data
-        //     .uniform_buffers
-        //     .iter()
-        //     .for_each(|b| self.device.destroy_buffer(*b, None));
-        // self.data
-        //     .uniform_buffers_memory
-        //     .iter()
-        //     .for_each(|m| self.device.free_memory(*m, None));
-        // self.data
-        //     .framebuffers
-        //     .iter()
-        //     .for_each(|f| self.device.destroy_framebuffer(*f, None));
-        // self.device.destroy_pipeline(self.data.pipeline, None);
-        // self.device
-        //     .destroy_pipeline_layout(self.data.pipeline_layout, None);
-        // self.device.destroy_render_pass(self.data.render_pass, None);
-        // self.data
-        //     .swapchain_image_views
-        //     .iter()
-        //     .for_each(|v| self.device.destroy_image_view(*v, None));
-         logical_device.destroy_swapchain_khr(self.swapchain, None);
+        logical_device.destroy_image_view(self.color_image_view, None);
+        logical_device.free_memory(self.color_image_memory, None);
+        logical_device.destroy_image(self.color_image, None);
+        logical_device.destroy_image_view(self.depth_image_view, None);
+        logical_device.free_memory(self.depth_image_memory, None);
+        logical_device.destroy_image(self.depth_image, None);
+        logical_device.destroy_descriptor_pool(self.descriptor_pool, None);
+        self.uniform_buffers
+            .iter()
+            .for_each(|b| logical_device.destroy_buffer(*b, None));
+        self.uniform_buffers_memory
+            .iter()
+            .for_each(|m| logical_device.free_memory(*m, None));
+        self.framebuffers
+            .iter()
+            .for_each(|f| logical_device.destroy_framebuffer(*f, None));
+        logical_device.destroy_pipeline(self.pipeline, None);
+        logical_device.destroy_pipeline_layout(self.pipeline_layout, None);
+        logical_device.destroy_render_pass(self.render_pass, None);
+        self.swapchain_image_views
+            .iter()
+            .for_each(|v| logical_device.destroy_image_view(*v, None));
+        logical_device.destroy_swapchain_khr(self.swapchain, None);
     }
 
     pub unsafe fn update_uniform_buffer(
@@ -424,13 +424,15 @@ impl GraphicsData {
     }
 
     pub unsafe fn destroy(&mut self, device: &Device) {
-        self.destroy_swapchain(device)
+        self.destroy_swapchain(device);
+        // self.texture_image.destroy(device);
+        self.wall.destroy(device);
     }
 }
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
-struct Vertex {
+pub struct Vertex {
     pos: Vec3,
     color: Vec3,
     tex_coord: Vec2,

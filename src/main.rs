@@ -18,7 +18,7 @@ use winit::window::{Window, WindowBuilder};
 use anyhow::anyhow;
 use log::*;
 use vulkanalia::loader::{LibloadingLoader, LIBRARY};
-use vulkanalia::prelude::v1_0::*;
+use vulkanalia::prelude::v1_2::*;
 use vulkanalia::window as vk_window;
 
 use vulkanalia::Version;
@@ -27,11 +27,10 @@ use std::collections::HashSet;
 use std::ffi::CStr;
 use std::os::raw::c_void;
 
-use vulkanalia::vk::ExtDebugUtilsExtension;
 
 use thiserror::Error;
 
-use vulkanalia::vk::KhrSurfaceExtension;
+use vulkanalia::vk::{KhrSurfaceExtension, ExtDebugUtilsExtension};
 
 use vulkanalia::vk::KhrSwapchainExtension;
 
@@ -186,7 +185,7 @@ impl App {
             .wait_for_fences(&[self.data.in_flight_fences[self.frame]], true, u64::MAX)?;
 
         let result = self.device.acquire_next_image_khr(
-            self.data.swapchain,
+            *self.data.swapchain,
             u64::MAX,
             self.data.image_available_semaphores[self.frame],
             vk::Fence::null(),
@@ -235,7 +234,7 @@ impl App {
             self.data.in_flight_fences[self.frame],
         )?;
 
-        let swapchains = &[self.data.swapchain];
+        let swapchains = &[*self.data.swapchain];
         let image_indices = &[image_index as u32];
         let present_info = vk::PresentInfoKHR::builder()
             .wait_semaphores(signal_semaphores)
@@ -583,6 +582,10 @@ unsafe fn create_instance(
         vk::InstanceCreateFlags::empty()
     };
 
+    let mut features = vk::ValidationFeaturesEXT::builder()
+        .enabled_validation_features(&[vk::ValidationFeatureEnableEXT::BEST_PRACTICES])
+        .build();
+
     let mut info = vk::InstanceCreateInfo::builder()
         .application_info(&application_info)
         .enabled_layer_names(&layers)
@@ -596,6 +599,7 @@ unsafe fn create_instance(
 
     if VALIDATION_ENABLED {
         info = info.push_next(&mut debug_info);
+        info = info.push_next(&mut features);
     }
 
     let instance = entry.create_instance(&info, None)?;

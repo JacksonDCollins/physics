@@ -25,6 +25,11 @@ use crate::MAX_FRAMES_IN_FLIGHT;
 
 use std::hash::Hash;
 
+use super::vko;
+use super::vko::Create;
+
+
+
 pub unsafe fn create_color_objects(
     instance: &Instance,
     device: &Device,
@@ -1087,7 +1092,7 @@ pub unsafe fn create_swapchain(
     logical_device: &Device,
     surface: vk::SurfaceKHR,
     physical_device: vk::PhysicalDevice,
-) -> Result<(vk::SwapchainKHR, Vec<vk::Image>, vk::Format, vk::Extent2D)> {
+) -> Result<(vko::SwapchainKHR, Vec<vk::Image>, vk::Format, vk::Extent2D)> {
     let indices = super::QueueFamilyIndices::get(instance, surface, physical_device)?;
     let support = super::SwapchainSupport::get(instance, surface, physical_device)?;
 
@@ -1127,8 +1132,8 @@ pub unsafe fn create_swapchain(
         .clipped(true)
         .old_swapchain(vk::SwapchainKHR::null());
 
-    let swapchain = logical_device.create_swapchain_khr(&info, None)?;
-    let swapchain_images = logical_device.get_swapchain_images_khr(swapchain)?;
+    let swapchain = logical_device.create_swapchain_khr_vko(&info, None)?;
+    let swapchain_images = logical_device.get_swapchain_images_khr(*swapchain)?;
     let swapchain_format = surface_format.format;
     let swapchain_extent = extent;
 

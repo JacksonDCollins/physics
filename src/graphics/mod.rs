@@ -1,7 +1,9 @@
 pub mod model;
 pub mod texture;
 pub mod utils;
+pub mod vk_objects;
 
+use vk_objects as vko;
 use std::fs::File;
 use std::mem::size_of;
 use std::time::Instant;
@@ -30,7 +32,9 @@ use crate::MAX_FRAMES_IN_FLIGHT;
 use std::hash::Hash;
 use std::hash::Hasher;
 
-#[derive(Clone, Debug, Default)]
+use self::vko::Destroy;
+
+#[derive(Clone, Debug)]
 pub struct GraphicsData {
     pub surface: vk::SurfaceKHR,
     pub physical_device: vk::PhysicalDevice,
@@ -39,7 +43,7 @@ pub struct GraphicsData {
     pub present_queue: vk::Queue,
     pub swapchain_format: vk::Format,
     pub swapchain_extent: vk::Extent2D,
-    pub swapchain: vk::SwapchainKHR,
+    pub swapchain: vko::SwapchainKHR,
     pub swapchain_images: Vec<vk::Image>,
     pub swapchain_image_views: Vec<vk::ImageView>,
     pub render_pass: vk::RenderPass,
@@ -269,7 +273,7 @@ impl GraphicsData {
             self.msaa_samples,
         )?;
         (self.pipeline_layout, self.pipeline) = crate::graphics::utils::create_pipeline(
-            logical_device,
+              logical_device,
             self.swapchain_extent,
             self.msaa_samples,
             self.descriptor_set_layout,
@@ -281,7 +285,7 @@ impl GraphicsData {
             self.color_image_view,
         ) = crate::graphics::utils::create_color_objects(
             instance,
-            logical_device,
+              logical_device,
             self.physical_device,
             self.swapchain_extent,
             self.msaa_samples,
@@ -293,7 +297,7 @@ impl GraphicsData {
             self.depth_image_view,
         ) = crate::graphics::utils::create_depth_objects(
             instance,
-            logical_device,
+             logical_device,
             self.physical_device,
             self.swapchain_extent,
             self.msaa_samples,
@@ -301,7 +305,7 @@ impl GraphicsData {
             self.graphics_queue,
         )?;
         self.framebuffers = crate::graphics::utils::create_framebuffers(
-            logical_device,
+               logical_device,
             &self.swapchain_image_views,
             self.color_image_view,
             self.depth_image_view,
@@ -311,7 +315,7 @@ impl GraphicsData {
         (self.uniform_buffers, self.uniform_buffers_memory) =
             crate::graphics::utils::create_uniform_buffers(
                 instance,
-                logical_device,
+                 logical_device,
                 self.physical_device,
                 &self.swapchain_images,
             )?;
@@ -319,7 +323,7 @@ impl GraphicsData {
             crate::graphics::utils::create_descriptor_pool(logical_device, &self.swapchain_images)?;
 
         self.descriptor_sets = crate::graphics::utils::create_descriptor_sets(
-            logical_device,
+             logical_device,
             self.descriptor_set_layout,
             &self.swapchain_images,
             self.descriptor_pool,
@@ -369,7 +373,7 @@ impl GraphicsData {
         //     .swapchain_image_views
         //     .iter()
         //     .for_each(|v| self.device.destroy_image_view(*v, None));
-        logical_device.destroy_swapchain_khr(self.swapchain, None);
+         logical_device.destroy_swapchain_khr(self.swapchain, None);
     }
 
     pub unsafe fn update_uniform_buffer(

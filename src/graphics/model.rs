@@ -7,7 +7,7 @@ use anyhow::anyhow;
 use anyhow::Result;
 use std::ptr::copy_nonoverlapping as memcpy;
 use vulkanalia::bytecode::Bytecode;
-use vulkanalia::prelude::v1_0::*;
+use vulkanalia::prelude::v1_2::*;
 use winit::window::{Window, WindowBuilder};
 
 use super::texture;

@@ -68,7 +68,7 @@ pub struct GraphicsData {
     pub color_image_memory: vk::DeviceMemory,
     pub color_image_view: vk::ImageView,
     // pub model: model::Model,
-    pub wall: model::Wall,
+    pub ball: model::Ball,
 }
 
 impl GraphicsData {
@@ -165,8 +165,7 @@ impl GraphicsData {
         //     graphics_queue,
         // )?; //load_model(&mut data)?;
 
-        let wall = model::Wall::new(
-            2.0,
+        let ball = model::Ball::new(
             texture_image,
             instance,
             logical_device,
@@ -192,7 +191,7 @@ impl GraphicsData {
             &swapchain_images,
             descriptor_pool,
             &uniform_buffers,
-            &wall.texture,
+            &ball.texture,
         )?;
 
         let (command_buffers, secondary_command_buffers) =
@@ -244,7 +243,7 @@ impl GraphicsData {
             color_image_memory,
             color_image_view,
             uniform_buffers_memory,
-            wall,
+            ball,
         })
     }
 
@@ -336,7 +335,7 @@ impl GraphicsData {
             &self.swapchain_images,
             self.descriptor_pool,
             &self.uniform_buffers,
-            &self.wall.texture,
+            &self.ball.texture,
         )?;
         (self.command_buffers, self.secondary_command_buffers) =
             crate::graphics::utils::create_command_buffers(
@@ -376,16 +375,9 @@ impl GraphicsData {
         logical_device.destroy_swapchain_khr(self.swapchain, None);
     }
 
-    pub unsafe fn update_uniform_buffer(
-        &self,
-        image_index: usize,
-        start: Instant,
-        device: &Device,
-    ) -> Result<()> {
-        let time = start.elapsed().as_secs_f32();
-
+    pub unsafe fn update_uniform_buffer(&self, image_index: usize, device: &Device) -> Result<()> {
         let view = Mat4::look_at_rh(
-            point3(6.0, 0.0, 2.0),
+            point3(10.0, 0.0, 0.0),
             point3(0.0, 0.0, 0.0),
             vec3(0.0, 0.0, 1.0),
         );
@@ -426,7 +418,7 @@ impl GraphicsData {
     pub unsafe fn destroy(&mut self, device: &Device) {
         self.destroy_swapchain(device);
         // self.texture_image.destroy(device);
-        self.wall.destroy(device);
+        self.ball.destroy(device);
     }
 }
 

@@ -10,7 +10,7 @@
 pub mod graphics;
 
 use anyhow::Result;
-use cgmath::{vec3, Deg};
+use cgmath::{vec3, Deg, Vector3};
 use winit::dpi::LogicalSize;
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
@@ -48,9 +48,11 @@ use std::io::BufReader;
 
 use winit::event::{ElementState, VirtualKeyCode};
 
-use graphics::GraphicsData;
+use graphics::{GraphicsData, Vec3};
 
 use std::ptr::copy_nonoverlapping as memcpy;
+
+use rand::Rng;
 
 const PORTABILITY_MACOS_VERSION: Version = Version::new(1, 3, 216);
 
@@ -104,8 +106,15 @@ fn main() -> Result<()> {
             } => {
                 if input.state == ElementState::Pressed {
                     match input.virtual_keycode {
-                        Some(VirtualKeyCode::Left) if app.models > 1 => app.models -= 1,
-                        Some(VirtualKeyCode::Right) if app.models < 4 => app.models += 1,
+                        // Some(VirtualKeyCode::Left) if app.models > 1 => app.models -= 1,
+                        // Some(VirtualKeyCode::Right) if app.models < 100 => app.models += 1,
+                        Some(VirtualKeyCode::Space) => {
+                            // //random int between 1 and 100
+                            // let mut rng = rand::thread_rng();
+                            // app.models = rng.gen_range(1..=100);
+                            app.world
+                                .spawn((vec3(0.0, 0.0, 0.0), app.data.ball.clone()));
+                        }
                         _ => {}
                     }
                 }
@@ -131,7 +140,7 @@ fn main() -> Result<()> {
 }
 
 /// Our Vulkan app.
-#[derive(Clone, Debug)]
+// #[derive(Debug)]
 struct App {
     entry: Entry,
     instance: Instance,
@@ -140,7 +149,8 @@ struct App {
     frame: usize,
     resized: bool,
     start: Instant,
-    models: usize,
+    // models: usize,
+    world: hecs::World,
     messenger: Option<vk::DebugUtilsMessengerEXT>,
 }
 
@@ -174,7 +184,8 @@ impl App {
             frame: 0,
             resized: false,
             start: Instant::now(),
-            models: 1,
+            // models: 1,
+            world: hecs::World::new(),
             messenger,
         })
     }
@@ -212,8 +223,7 @@ impl App {
         self.data.images_in_flight[image_index] = self.data.in_flight_fences[self.frame];
 
         self.update_command_buffer(image_index)?;
-        self.data
-            .update_uniform_buffer(image_index, self.start, &self.device)?;
+        self.data.update_uniform_buffer(image_index, &self.device)?;
 
         let wait_semaphores = &[self.data.image_available_semaphores[self.frame]];
         let wait_stages = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -301,7 +311,6 @@ impl App {
         let command_pool = self.data.command_pools[image_index];
         self.device
             .reset_command_pool(command_pool, vk::CommandPoolResetFlags::empty())?;
-
         let command_buffer = self.data.command_buffers[image_index];
 
         let inheritance = vk::CommandBufferInheritanceInfo::builder();
@@ -342,10 +351,19 @@ impl App {
             vk::SubpassContents::SECONDARY_COMMAND_BUFFERS,
         );
 
-        // let secondary_command_buffer = self.update_secondary_command_buffer(image_index, 0)?;
-        let secondary_command_buffers = (0..self.models)
-            .map(|i| self.update_secondary_command_buffer(image_index, i))
+        let ents = self
+            .world
+            .query_mut::<(&Vector3<f64>, &graphics::model::Ball)>()
+            .into_iter()
+            .enumerate()
+            .map(|(id, (entity, (x, y)))| (id))
+            .collect::<Vec<_>>();
+
+        let secondary_command_buffers = ents
+            .iter()
+            .map(|i| self.update_secondary_command_buffer(image_index, *i))
             .collect::<Result<Vec<_>, _>>()?;
+
         self.device
             .cmd_execute_commands(command_buffer, &secondary_command_buffers);
 
@@ -361,10 +379,11 @@ impl App {
         image_index: usize,
         model_index: usize,
     ) -> Result<vk::CommandBuffer> {
-        self.data
-            .secondary_command_buffers
-            .resize_with(image_index + 1, Vec::new); //?? why
+        // self.data
+        //     .secondary_command_buffers
+        //     .resize_with(image_index + 1, Vec::new);
         let command_buffers = &mut self.data.secondary_command_buffers[image_index];
+
         while model_index >= command_buffers.len() {
             let allocate_info = vk::CommandBufferAllocateInfo::builder()
                 .command_pool(self.data.command_pools[image_index])
@@ -413,13 +432,13 @@ impl App {
         self.device.cmd_bind_vertex_buffers(
             command_buffer,
             0,
-            &[self.data.wall.model.vertex_buffer],
+            &[self.data.ball.model.vertex_buffer],
             &[0],
         );
 
         self.device.cmd_bind_index_buffer(
             command_buffer,
-            self.data.wall.model.index_buffer,
+            self.data.ball.model.index_buffer,
             0,
             vk::IndexType::UINT32,
         );
@@ -449,7 +468,7 @@ impl App {
 
         self.device.cmd_draw_indexed(
             command_buffer,
-            self.data.wall.model.indices.len() as u32,
+            self.data.ball.model.indices.len() as u32,
             1,
             0,
             0,

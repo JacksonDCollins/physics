@@ -1,11 +1,12 @@
+use crate::graphics::objects as g_objects;
+use anyhow::{anyhow, Error, Result};
 use std::collections::HashSet;
 use std::ffi::CStr;
 use std::os::raw::c_void;
-
-use anyhow::{anyhow, Error, Result};
 use thiserror::Error;
+use vulkanalia::bytecode::Bytecode;
 use vulkanalia::prelude::v1_2::*;
-use vulkanalia::vk::{ExtDebugUtilsExtension, KhrSurfaceExtension};
+use vulkanalia::vk::{ExtDebugUtilsExtension, KhrSurfaceExtension, KhrSwapchainExtension};
 use vulkanalia::{Entry, Version};
 use winit::window::Window;
 
@@ -128,20 +129,20 @@ pub struct SuitabilityError(pub &'static str);
 pub unsafe fn pick_physical_device(
     instance: &Instance,
     surface: vk::SurfaceKHR,
-) -> Result<vk::PhysicalDevice> {
+) -> Result<(vk::PhysicalDevice, QueueFamilyIndices, SwapchainSupport)> {
     for physical_device in instance.enumerate_physical_devices()? {
         let properties = instance.get_physical_device_properties(physical_device);
 
-        if let Err(error) = check_physical_device(instance, surface, physical_device) {
-            log::warn!(
+        match check_physical_device(instance, surface, physical_device) {
+            Err(error) => log::warn!(
                 "Skipping physical device (`{}`): {}",
                 properties.device_name,
                 error
-            );
-        } else {
-            log::info!("Selected physical device (`{}`).", properties.device_name);
-
-            return Ok(physical_device);
+            ),
+            Ok((indices, swapchain_support)) => {
+                log::info!("Selected physical device (`{}`).", properties.device_name);
+                return Ok((physical_device, indices, swapchain_support));
+            }
         }
     }
 
@@ -152,7 +153,7 @@ unsafe fn check_physical_device(
     instance: &Instance,
     surface: vk::SurfaceKHR,
     physical_device: vk::PhysicalDevice,
-) -> Result<()> {
+) -> Result<(QueueFamilyIndices, SwapchainSupport)> {
     let properties = instance.get_physical_device_properties(physical_device);
     if properties.device_type != vk::PhysicalDeviceType::DISCRETE_GPU {
         return Err(anyhow!(SuitabilityError(
@@ -170,7 +171,7 @@ unsafe fn check_physical_device(
         return Err(anyhow!(SuitabilityError("No sampler anisotropy.")));
     }
 
-    QueueFamilyIndices::get(instance, surface, physical_device)?;
+    let indices = QueueFamilyIndices::get(instance, surface, physical_device)?;
     check_physical_device_extensions(instance, physical_device)?;
 
     let support = SwapchainSupport::get(instance, surface, physical_device)?;
@@ -178,7 +179,7 @@ unsafe fn check_physical_device(
         return Err(anyhow!(SuitabilityError("Insufficient swapchain support.")));
     }
 
-    Ok(())
+    Ok((indices, support))
 }
 
 unsafe fn check_physical_device_extensions(
@@ -203,9 +204,15 @@ unsafe fn check_physical_device_extensions(
 pub struct QueueFamilyIndices {
     pub graphics: u32,
     pub present: u32,
+    pub transfer: u32,
+    pub compute: u32,
 }
 
 impl QueueFamilyIndices {
+    pub fn to_render_vec(&self) -> Vec<u32> {
+        let set = HashSet::from([self.graphics, self.present, self.transfer]);
+        set.into_iter().collect::<Vec<_>>()
+    }
     pub unsafe fn get(
         instance: &Instance,
         surface: vk::SurfaceKHR,
@@ -216,6 +223,19 @@ impl QueueFamilyIndices {
         let graphics = properties
             .iter()
             .position(|p| p.queue_flags.contains(vk::QueueFlags::GRAPHICS))
+            .map(|i| i as u32);
+
+        let transfer = properties
+            .iter()
+            .position(|p| {
+                p.queue_flags.contains(vk::QueueFlags::TRANSFER)
+                    && !p.queue_flags.contains(vk::QueueFlags::GRAPHICS)
+            })
+            .map(|i| i as u32);
+
+        let compute = properties
+            .iter()
+            .position(|p| p.queue_flags.contains(vk::QueueFlags::COMPUTE))
             .map(|i| i as u32);
 
         let mut present = None;
@@ -230,8 +250,15 @@ impl QueueFamilyIndices {
             }
         }
 
-        if let (Some(graphics), Some(present)) = (graphics, present) {
-            Ok(Self { graphics, present })
+        if let (Some(graphics), Some(present), Some(transfer), Some(compute)) =
+            (graphics, present, transfer, compute)
+        {
+            Ok(Self {
+                graphics,
+                present,
+                transfer,
+                compute,
+            })
         } else {
             Err(anyhow!(SuitabilityError(
                 "Missing required queue families."
@@ -263,17 +290,24 @@ impl SwapchainSupport {
     }
 }
 
+pub struct QueueSet {
+    pub graphics: vk::Queue,
+    pub present: vk::Queue,
+    pub transfer: vk::Queue,
+    pub compute: vk::Queue,
+}
+
 pub unsafe fn create_logical_device(
     entry: &Entry,
     instance: &Instance,
-    surface: vk::SurfaceKHR,
     physical_device: vk::PhysicalDevice,
-) -> Result<(Device, vk::Queue, vk::Queue)> {
-    let indices = QueueFamilyIndices::get(instance, surface, physical_device)?;
-
+    indices: QueueFamilyIndices,
+) -> Result<(Device, QueueSet)> {
     let mut unique_indices = HashSet::new();
     unique_indices.insert(indices.graphics);
     unique_indices.insert(indices.present);
+    unique_indices.insert(indices.transfer);
+    unique_indices.insert(indices.compute);
 
     let queue_priorities = &[1.0];
     let queue_infos = unique_indices
@@ -313,5 +347,176 @@ pub unsafe fn create_logical_device(
 
     let graphics_queue = device.get_device_queue(indices.graphics, 0);
     let present_queue = device.get_device_queue(indices.present, 0);
-    Ok((device, graphics_queue, present_queue))
+    let transfer_queue = device.get_device_queue(indices.transfer, 0);
+    let compute_queue = device.get_device_queue(indices.compute, 0);
+    Ok((
+        device,
+        QueueSet {
+            graphics: graphics_queue,
+            present: present_queue,
+            transfer: transfer_queue,
+            compute: compute_queue,
+        },
+    ))
+}
+
+fn get_swapchain_surface_format(formats: &[vk::SurfaceFormatKHR]) -> vk::SurfaceFormatKHR {
+    formats
+        .iter()
+        .cloned()
+        .find(|f| {
+            f.format == vk::Format::B8G8R8A8_SRGB
+                && f.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
+        })
+        .unwrap_or_else(|| formats[0])
+}
+
+fn get_swapchain_present_mode(present_modes: &[vk::PresentModeKHR]) -> vk::PresentModeKHR {
+    present_modes
+        .iter()
+        .cloned()
+        .find(|m| *m == vk::PresentModeKHR::MAILBOX)
+        .unwrap_or(vk::PresentModeKHR::FIFO)
+}
+
+fn get_swapchain_extent(window: &Window, capabilities: vk::SurfaceCapabilitiesKHR) -> vk::Extent2D {
+    if capabilities.current_extent.width != u32::MAX {
+        capabilities.current_extent
+    } else {
+        let size = window.inner_size();
+        let clamp = |min: u32, max: u32, v: u32| min.max(max.min(v));
+        vk::Extent2D::builder()
+            .width(clamp(
+                capabilities.min_image_extent.width,
+                capabilities.max_image_extent.width,
+                size.width,
+            ))
+            .height(clamp(
+                capabilities.min_image_extent.height,
+                capabilities.max_image_extent.height,
+                size.height,
+            ))
+            .build()
+    }
+}
+
+pub unsafe fn create_swapchain(
+    window: &Window,
+    instance: &Instance,
+    logical_device: &Device,
+    physical_device: vk::PhysicalDevice,
+    surface: vk::SurfaceKHR,
+    queue_family_indices: QueueFamilyIndices,
+    swapchain_support: SwapchainSupport,
+) -> Result<(vk::SwapchainKHR, Vec<vk::Image>, vk::Extent2D, vk::Format)> {
+    let surface_format = get_swapchain_surface_format(&swapchain_support.formats);
+    let present_mode = get_swapchain_present_mode(&swapchain_support.present_modes);
+    let extent = get_swapchain_extent(window, swapchain_support.capabilities);
+
+    let mut image_count = swapchain_support.capabilities.min_image_count + 1;
+    if swapchain_support.capabilities.max_image_count != 0
+        && image_count > swapchain_support.capabilities.max_image_count
+    {
+        image_count = swapchain_support.capabilities.max_image_count;
+    }
+
+    let image_sharing_mode = vk::SharingMode::CONCURRENT;
+
+    let indices = queue_family_indices.to_render_vec();
+    let swapchain_create_info = vk::SwapchainCreateInfoKHR::builder()
+        .surface(surface)
+        .min_image_count(image_count)
+        .image_format(surface_format.format)
+        .image_color_space(surface_format.color_space)
+        .image_extent(extent)
+        .image_array_layers(1)
+        .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+        .image_sharing_mode(image_sharing_mode)
+        .queue_family_indices(&indices)
+        .pre_transform(swapchain_support.capabilities.current_transform)
+        .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+        .present_mode(present_mode)
+        .clipped(true)
+        .old_swapchain(vk::SwapchainKHR::null());
+
+    let swapchain = logical_device.create_swapchain_khr(&swapchain_create_info, None)?;
+    let images = logical_device.get_swapchain_images_khr(swapchain)?;
+    let extent = swapchain_create_info.image_extent;
+    let format = swapchain_create_info.image_format;
+    Ok((swapchain, images, extent, format))
+}
+
+pub unsafe fn create_swapchain_image_views(
+    logical_device: &Device,
+    images: &Vec<vk::Image>,
+    swapchain_format: vk::Format,
+) -> Result<Vec<vk::ImageView>> {
+    images
+        .iter()
+        .map(|i| {
+            let components = vk::ComponentMapping::builder()
+                .r(vk::ComponentSwizzle::IDENTITY)
+                .g(vk::ComponentSwizzle::IDENTITY)
+                .b(vk::ComponentSwizzle::IDENTITY)
+                .a(vk::ComponentSwizzle::IDENTITY);
+
+            let subresource_range = vk::ImageSubresourceRange::builder()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .base_mip_level(0)
+                .level_count(1)
+                .base_array_layer(0)
+                .layer_count(1);
+
+            let info = vk::ImageViewCreateInfo::builder()
+                .image(*i)
+                .view_type(vk::ImageViewType::_2D)
+                .format(swapchain_format)
+                .components(components)
+                .subresource_range(subresource_range);
+
+            logical_device
+                .create_image_view(&info, None)
+                .map_err(|e| anyhow!("{}", e))
+        })
+        .collect::<Result<Vec<_>, _>>()
+}
+
+pub unsafe fn create_pipeline(
+    logical_device: &Device,
+    swapchain: &g_objects::Swapchain,
+) -> Result<vk::Pipeline> {
+    let vert = include_bytes!("../../shaders/vert.spv");
+    let frag = include_bytes!("../../shaders/frag.spv");
+
+    let vert_shader_module = create_shader_module(logical_device, &vert[..])?;
+    let frag_shader_module = create_shader_module(logical_device, &frag[..])?;
+
+    let vert_stage = vk::PipelineShaderStageCreateInfo::builder()
+        .stage(vk::ShaderStageFlags::VERTEX)
+        .module(vert_shader_module)
+        .name(b"main\0");
+
+    let frag_stage = vk::PipelineShaderStageCreateInfo::builder()
+        .stage(vk::ShaderStageFlags::FRAGMENT)
+        .module(frag_shader_module)
+        .name(b"main\0");
+
+    //TODO here https://kylemayes.github.io/vulkanalia/pipeline/fixed_functions.html
+
+    logical_device.destroy_shader_module(vert_shader_module, None);
+    logical_device.destroy_shader_module(frag_shader_module, None);
+    Ok(())
+}
+
+unsafe fn create_shader_module(
+    logical_device: &Device,
+    bytecode: &[u8],
+) -> Result<vk::ShaderModule> {
+    let bytecode = Bytecode::new(bytecode).unwrap();
+
+    let info = vk::ShaderModuleCreateInfo::builder()
+        .code_size(bytecode.code_size())
+        .code(bytecode.code());
+
+    Ok(logical_device.create_shader_module(&info, None)?)
 }

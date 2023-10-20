@@ -15,6 +15,7 @@ pub struct App {
     logical_device: Device,
     dbg_messenger: Option<vk::DebugUtilsMessengerEXT>,
     render_engine: graphics::engine::RenderEngine,
+    frame: usize,
 }
 
 impl App {
@@ -40,8 +41,8 @@ impl App {
             physical_device,
             surface,
             queue_set,
-            queue_family_indices,
-            swapchain_support,
+            &queue_family_indices,
+            &swapchain_support,
         )?;
 
         Ok(Self {
@@ -50,11 +51,17 @@ impl App {
             logical_device,
             dbg_messenger,
             render_engine,
+            frame: 0,
         })
     }
 
     pub unsafe fn render(&mut self, window: &Window) -> Result<()> {
-        self.render_engine.render(window)?;
+        self.render_engine
+            .render(&self.logical_device, self.frame)?;
+
+        self.frame = (self.frame + 1) % g_utils::MAX_FRAMES_IN_FLIGHT;
+
+        // log::info!("frame: {}", self.frame);
         Ok(())
     }
 
@@ -68,8 +75,10 @@ impl App {
             .destroy(&self.logical_device, &self.instance);
 
         self.logical_device.destroy_device(None);
-        self.dbg_messenger
-            .map(|msger| self.instance.destroy_debug_utils_messenger_ext(msger, None));
+        self.dbg_messenger.iter().for_each(|msger| {
+            self.instance
+                .destroy_debug_utils_messenger_ext(*msger, None)
+        });
         self.instance.destroy_instance(None);
     }
 }

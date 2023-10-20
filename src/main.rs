@@ -1,4 +1,4 @@
-#![allow(clippy::missing_safety_doc)]
+#![allow(clippy::missing_safety_doc, clippy::too_many_arguments)]
 pub mod app;
 pub mod graphics;
 

@@ -1,8 +1,13 @@
 use crate::graphics::objects as g_objects;
+use crate::graphics::types as g_types;
 use anyhow::{anyhow, Error, Result};
+use bincode::de;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ffi::CStr;
+use std::mem::size_of;
 use std::os::raw::c_void;
+use std::ptr::copy_nonoverlapping as memcpy;
 use thiserror::Error;
 use vulkanalia::bytecode::Bytecode;
 use vulkanalia::prelude::v1_2::*;
@@ -112,12 +117,16 @@ extern "system" fn debug_callback(
 
     if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::ERROR {
         log::error!("({:?}) {}", type_, message);
+        println!("\n");
     } else if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::WARNING {
         log::warn!("({:?}) {}", type_, message);
+        println!("\n");
     } else if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::INFO {
         log::debug!("({:?}) {}", type_, message);
+        println!("\n");
     } else {
         log::trace!("({:?}) {}", type_, message);
+        println!("\n");
     }
 
     vk::FALSE
@@ -211,9 +220,15 @@ pub struct QueueFamilyIndices {
 
 impl QueueFamilyIndices {
     pub fn to_render_vec(&self) -> Vec<u32> {
-        let set = HashSet::from([self.graphics, self.present, self.transfer]);
+        let set = HashSet::from([self.graphics, self.transfer]);
         set.into_iter().collect::<Vec<_>>()
     }
+
+    pub unsafe fn get_unique_indices(&self) -> Vec<u32> {
+        let set = HashSet::from([self.graphics, self.present, self.transfer, self.compute]);
+        set.into_iter().collect::<Vec<_>>()
+    }
+
     pub unsafe fn get(
         instance: &Instance,
         surface: vk::SurfaceKHR,
@@ -236,7 +251,10 @@ impl QueueFamilyIndices {
 
         let compute = properties
             .iter()
-            .position(|p| p.queue_flags.contains(vk::QueueFlags::COMPUTE))
+            .position(|p| {
+                p.queue_flags.contains(vk::QueueFlags::COMPUTE)
+                    && !p.queue_flags.contains(vk::QueueFlags::GRAPHICS)
+            })
             .map(|i| i as u32);
 
         let mut present = None;
@@ -502,7 +520,11 @@ pub unsafe fn create_pipeline_and_renderpass(
         .module(frag_shader_module)
         .name(b"main\0");
 
-    let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::builder();
+    let binding_descriptions = &[g_types::Vertex::binding_description()];
+    let attribute_descriptions = g_types::Vertex::attribute_descriptions();
+    let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::builder()
+        .vertex_binding_descriptions(binding_descriptions)
+        .vertex_attribute_descriptions(&attribute_descriptions);
 
     let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::builder()
         .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
@@ -669,28 +691,54 @@ pub unsafe fn create_framebuffers(
         .collect::<Result<Vec<_>, _>>()
 }
 
-pub unsafe fn create_command_pool(
+pub unsafe fn create_command_pools(
     logical_device: &Device,
     queue_family_indices: &QueueFamilyIndices,
-) -> Result<vk::CommandPool> {
-    let info = vk::CommandPoolCreateInfo::builder()
-        .flags(vk::CommandPoolCreateFlags::empty()) // Optional.
-        .queue_family_index(queue_family_indices.graphics);
+) -> Result<g_types::CommandPoolSet> {
+    let present = {
+        let info = vk::CommandPoolCreateInfo::builder()
+            .queue_family_index(queue_family_indices.present)
+            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
 
-    logical_device
-        .create_command_pool(&info, None)
-        .map_err(|e| anyhow!("{}", e))
+        logical_device.create_command_pool(&info, None)?
+    };
+    let graphics = {
+        let info = vk::CommandPoolCreateInfo::builder()
+            .queue_family_index(queue_family_indices.graphics)
+            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
+
+        logical_device.create_command_pool(&info, None)?
+    };
+    let transfer = {
+        let info = vk::CommandPoolCreateInfo::builder()
+            .queue_family_index(queue_family_indices.transfer)
+            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
+
+        logical_device.create_command_pool(&info, None)?
+    };
+    let compute = {
+        let info = vk::CommandPoolCreateInfo::builder()
+            .queue_family_index(queue_family_indices.compute)
+            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
+
+        logical_device.create_command_pool(&info, None)?
+    };
+
+    Ok(g_types::CommandPoolSet::create(
+        present, graphics, transfer, compute,
+    ))
 }
 
 pub unsafe fn create_command_buffers(
     device: &Device,
-    command_pool: vk::CommandPool,
+    command_pool_set: g_types::CommandPoolSet,
     framebuffers: &Vec<vk::Framebuffer>,
     swapchain: &g_objects::Swapchain,
     pipeline: &g_objects::Pipeline,
+    buffer_memory_allocator: &mut g_objects::BufferMemoryAllocator,
 ) -> Result<Vec<vk::CommandBuffer>> {
     let allocate_info = vk::CommandBufferAllocateInfo::builder()
-        .command_pool(command_pool)
+        .command_pool(command_pool_set.graphics)
         .level(vk::CommandBufferLevel::PRIMARY)
         .command_buffer_count(framebuffers.len() as u32);
 
@@ -730,7 +778,31 @@ pub unsafe fn create_command_buffers(
             pipeline.pipeline,
         );
 
-        device.cmd_draw(*command_buffer, 3, 1, 0, 0);
+        device.cmd_bind_vertex_buffers(
+            *command_buffer,
+            0,
+            &buffer_memory_allocator.get_vertex_buffers(), //&[buffer_memory_allocator.vertex_buffers_to_allocate[0].vertex_buffer],
+            &buffer_memory_allocator.get_vertex_buffers_offsets(), //&[buffer_memory_allocator.vertex_buffers_to_allocate[0].offset],
+        );
+
+        device.cmd_bind_index_buffer(
+            *command_buffer,
+            buffer_memory_allocator.index_buffer_to_allocate.buffer,
+            0,
+            vk::IndexType::UINT16,
+        );
+
+        device.cmd_draw_indexed(
+            *command_buffer,
+            buffer_memory_allocator
+                .index_buffer_to_allocate
+                .indices
+                .len() as u32,
+            1,
+            0,
+            0,
+            0,
+        );
 
         device.cmd_end_render_pass(*command_buffer);
 
@@ -787,4 +859,202 @@ pub unsafe fn create_sync_objects(
         in_flight_fences,
         images_in_flight,
     ))
+}
+
+pub unsafe fn query_swapchain_support(
+    instance: &Instance,
+    physical_device: vk::PhysicalDevice,
+    surface: vk::SurfaceKHR,
+) -> Result<SwapchainSupport> {
+    let capabilities =
+        instance.get_physical_device_surface_capabilities_khr(physical_device, surface)?;
+    let formats = instance.get_physical_device_surface_formats_khr(physical_device, surface)?;
+    let present_modes =
+        instance.get_physical_device_surface_present_modes_khr(physical_device, surface)?;
+
+    Ok(SwapchainSupport {
+        capabilities,
+        formats,
+        present_modes,
+    })
+}
+
+// pub unsafe fn create_vertex_buffer(
+//     instance: &Instance,
+//     physical_device: vk::PhysicalDevice,
+//     logical_device: &Device,
+//     command_pool: vk::CommandPool,
+//     queue_set: &QueueSet,
+// ) -> Result<(vk::Buffer, vk::DeviceMemory)> {
+//     let size = (size_of::<g_types::Vertex>() * g_types::VERTICES.len()) as u64;
+
+//     let (staging_buffer, staging_buffer_memory) = create_buffer(
+//         instance,
+//         logical_device,
+//         physical_device,
+//         size,
+//         vk::BufferUsageFlags::TRANSFER_SRC,
+//         vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
+//     )?;
+
+//     let memory =
+//         logical_device.map_memory(staging_buffer_memory, 0, size, vk::MemoryMapFlags::empty())?;
+
+//     memcpy(
+//         g_types::VERTICES.as_ptr(),
+//         memory.cast(),
+//         g_types::VERTICES.len(),
+//     );
+
+//     logical_device.unmap_memory(staging_buffer_memory);
+
+//     let (vertex_buffer, vertex_buffer_memory) = create_buffer(
+//         instance,
+//         logical_device,
+//         physical_device,
+//         size,
+//         vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
+//         vk::MemoryPropertyFlags::DEVICE_LOCAL,
+//     )?;
+
+//     copy_buffer(
+//         logical_device,
+//         queue_set,
+//         command_pool,
+//         staging_buffer,
+//         vertex_buffer,
+//         size,
+//     )?;
+
+//     logical_device.destroy_buffer(staging_buffer, None);
+//     logical_device.free_memory(staging_buffer_memory, None);
+
+//     Ok((vertex_buffer, vertex_buffer_memory))
+// }
+
+pub unsafe fn get_memory_type_index(
+    instance: &Instance,
+    physical_device: vk::PhysicalDevice,
+    properties: vk::MemoryPropertyFlags,
+    requirements: vk::MemoryRequirements,
+) -> Result<u32> {
+    let memory = instance.get_physical_device_memory_properties(physical_device);
+
+    (0..memory.memory_type_count)
+        .find(|i| {
+            let suitable = (requirements.memory_type_bits & (1 << i)) != 0;
+            let memory_type = memory.memory_types[*i as usize];
+            suitable && memory_type.property_flags.contains(properties)
+        })
+        .ok_or_else(|| anyhow!("Failed to find suitable memory type."))
+}
+
+pub unsafe fn create_buffer(
+    logical_device: &Device,
+    size: vk::DeviceSize,
+    usage: vk::BufferUsageFlags,
+) -> Result<vk::Buffer> {
+    let buffer_info = vk::BufferCreateInfo::builder()
+        .size(size)
+        .usage(usage)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+    logical_device
+        .create_buffer(&buffer_info, None)
+        .map_err(|e| anyhow!("{}", e))
+}
+
+pub unsafe fn create_buffer_and_memory(
+    instance: &Instance,
+    device: &Device,
+    physical_device: vk::PhysicalDevice,
+    size: vk::DeviceSize,
+    usage: vk::BufferUsageFlags,
+    properties: vk::MemoryPropertyFlags,
+) -> Result<(vk::Buffer, vk::DeviceMemory, vk::MemoryRequirements)> {
+    // let buffer_info = vk::BufferCreateInfo::builder()
+    //     .size(size)
+    //     .usage(usage)
+    //     .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+    // device
+    //     .create_buffer(&buffer_info, None)
+    //     .map_err(|e| anyhow!("{}", e))
+
+    let buffer = create_buffer(device, size, usage)?; //device.create_buffer(&buffer_info, None)?;
+
+    let requirements = device.get_buffer_memory_requirements(buffer);
+
+    let memory_info = vk::MemoryAllocateInfo::builder()
+        .allocation_size(requirements.size)
+        .memory_type_index(get_memory_type_index(
+            instance,
+            physical_device,
+            properties,
+            requirements,
+        )?);
+
+    let buffer_memory = device.allocate_memory(&memory_info, None)?;
+
+    device.bind_buffer_memory(buffer, buffer_memory, 0)?;
+
+    Ok((buffer, buffer_memory, requirements))
+}
+
+pub unsafe fn copy_buffer(
+    device: &Device,
+    queue: vk::Queue,
+    command_pool: vk::CommandPool,
+    source: vk::Buffer,
+    destination: vk::Buffer,
+    size: vk::DeviceSize,
+    src_offset: u64,
+) -> Result<()> {
+    let info = vk::CommandBufferAllocateInfo::builder()
+        .level(vk::CommandBufferLevel::PRIMARY)
+        .command_pool(command_pool)
+        .command_buffer_count(1);
+
+    let command_buffer = device.allocate_command_buffers(&info)?[0];
+
+    let info =
+        vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+
+    device.begin_command_buffer(command_buffer, &info)?;
+
+    let regions = vk::BufferCopy::builder().size(size).src_offset(src_offset);
+    device.cmd_copy_buffer(command_buffer, source, destination, &[regions]);
+
+    device.end_command_buffer(command_buffer)?;
+
+    let command_buffers = &[command_buffer];
+    let info = vk::SubmitInfo::builder().command_buffers(command_buffers);
+
+    device.queue_submit(queue, &[info], vk::Fence::null())?;
+    device.queue_wait_idle(queue)?;
+
+    device.free_command_buffers(command_pool, &[command_buffer]);
+
+    Ok(())
+}
+
+pub unsafe fn get_memory_info(
+    instance: &Instance,
+    physical_device: vk::PhysicalDevice,
+    logical_device: &Device,
+    buffer: vk::Buffer,
+    size: u64,
+    properties: vk::MemoryPropertyFlags,
+) -> Result<vk::MemoryAllocateInfo> {
+    let requirements = logical_device.get_buffer_memory_requirements(buffer);
+
+    Ok(vk::MemoryAllocateInfo::builder()
+        .allocation_size(size)
+        .memory_type_index(get_memory_type_index(
+            instance,
+            physical_device,
+            properties,
+            requirements,
+        )?)
+        .build())
 }

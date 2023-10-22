@@ -22,10 +22,13 @@ fn main() -> Result<()> {
     let mut app = unsafe { App::create(&window) }?;
 
     let mut destroying = false;
+    let mut minimized = false;
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
         match event {
-            Event::MainEventsCleared if !destroying => unsafe { app.render(&window) }.unwrap(),
+            Event::MainEventsCleared if !destroying && !minimized => {
+                unsafe { app.render(&window) }.unwrap()
+            }
             Event::WindowEvent {
                 event: window_event,
                 ..
@@ -39,7 +42,12 @@ fn main() -> Result<()> {
                     }
                 }
                 WindowEvent::Resized(size) => {
-                    //resize
+                    if size.width == 0 || size.height == 0 {
+                        minimized = true;
+                    } else {
+                        minimized = false;
+                        app.resized = true;
+                    }
                 }
                 _ => {}
             },

@@ -13,9 +13,11 @@ pub struct App {
     entry: Entry,
     instance: Instance,
     logical_device: Device,
+    physical_device: vk::PhysicalDevice,
     dbg_messenger: Option<vk::DebugUtilsMessengerEXT>,
     render_engine: graphics::engine::RenderEngine,
     frame: usize,
+    pub resized: bool,
 }
 
 impl App {
@@ -41,27 +43,36 @@ impl App {
             physical_device,
             surface,
             queue_set,
-            &queue_family_indices,
-            &swapchain_support,
+            queue_family_indices,
+            swapchain_support,
         )?;
 
         Ok(Self {
             entry,
             instance,
             logical_device,
+            physical_device,
             dbg_messenger,
             render_engine,
             frame: 0,
+            resized: false,
         })
     }
 
     pub unsafe fn render(&mut self, window: &Window) -> Result<()> {
-        self.render_engine
-            .render(&self.logical_device, self.frame)?;
+        self.render_engine.render(
+            window,
+            &self.logical_device,
+            self.physical_device,
+            &self.instance,
+            self.frame,
+            &mut self.resized,
+        )?;
 
         self.frame = (self.frame + 1) % g_utils::MAX_FRAMES_IN_FLIGHT;
 
         // log::info!("frame: {}", self.frame);
+
         Ok(())
     }
 

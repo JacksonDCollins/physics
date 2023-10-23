@@ -55,3 +55,7 @@ fn main() -> Result<()> {
         }
     });
 }
+
+//https://stackoverflow.com/questions/50571489/best-practice-for-uniform-buffer-in-vulkan
+
+//https://kylemayes.github.io/vulkanalia/texture/images.html

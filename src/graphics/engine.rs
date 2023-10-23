@@ -3,11 +3,12 @@ use crate::graphics::types as g_types;
 use crate::graphics::utils as g_utils;
 
 use anyhow::{anyhow, Result};
+use std::time::Instant;
 use vk::SurfaceKHR;
 use vulkanalia::prelude::v1_2::*;
 use vulkanalia::vk::KhrSurfaceExtension;
 use vulkanalia::vk::KhrSwapchainExtension;
-use vulkanalia::window;
+
 use winit::window::Window;
 
 pub struct RenderEngine {
@@ -20,6 +21,8 @@ pub struct RenderEngine {
     buffer_memory_allocator: g_objects::BufferMemoryAllocator,
     queue_family_indices: g_utils::QueueFamilyIndices,
     swapchain_support: g_utils::SwapchainSupport,
+
+    start: Instant,
 }
 
 impl RenderEngine {
@@ -35,9 +38,7 @@ impl RenderEngine {
     ) -> Result<Self> {
         let swapchain = g_objects::Swapchain::create(
             window,
-            instance,
             logical_device,
-            physical_device,
             surface,
             &queue_family_indices,
             &swapchain_support,
@@ -47,7 +48,7 @@ impl RenderEngine {
 
         let mut buffer_memory_allocator = g_objects::BufferMemoryAllocator::create()?;
 
-        for i in 0..1 {
+        for _i in 0..1 {
             let vertex_buffer = g_objects::VertexBuffer::create(
                 // instance,
                 // physical_device,
@@ -65,6 +66,16 @@ impl RenderEngine {
         )?;
 
         buffer_memory_allocator.set_index_buffer(index_buffer);
+
+        for _ in 0..swapchain.images.len() {
+            let uniform_buffer = g_objects::UniformBuffer::create(
+                // instance,
+                // physical_device,
+                logical_device,
+                g_types::UniformBufferObject::default(),
+            )?;
+            buffer_memory_allocator.add_uniform_buffer(uniform_buffer);
+        }
 
         let presenter = g_objects::Presenter::create(
             logical_device,
@@ -87,6 +98,8 @@ impl RenderEngine {
             buffer_memory_allocator,
             queue_family_indices,
             swapchain_support,
+
+            start: Instant::now(),
         })
     }
 
@@ -101,7 +114,6 @@ impl RenderEngine {
 
         self.swapchain.destroy(logical_device);
         self.pipeline.destroy(logical_device);
-        self.buffer_memory_allocator.destroy(logical_device);
         self.presenter.destroy(logical_device);
 
         self.swapchain_support =
@@ -109,36 +121,13 @@ impl RenderEngine {
 
         self.swapchain = g_objects::Swapchain::create(
             window,
-            instance,
             logical_device,
-            physical_device,
             self.surface,
             &self.queue_family_indices,
             &self.swapchain_support,
         )?;
 
         self.pipeline = g_objects::Pipeline::create(logical_device, &self.swapchain)?;
-
-        self.buffer_memory_allocator = g_objects::BufferMemoryAllocator::create()?;
-        for i in 0..1 {
-            let vertex_buffer = g_objects::VertexBuffer::create(
-                // instance,
-                // physical_device,
-                logical_device,
-                &g_types::VERTICES,
-            )?;
-            self.buffer_memory_allocator
-                .add_vertex_buffer(vertex_buffer);
-        }
-
-        let index_buffer = g_objects::IndexBuffer::create(
-            // instance,
-            // physical_device,
-            logical_device,
-            g_types::INDICES,
-        )?;
-
-        self.buffer_memory_allocator.set_index_buffer(index_buffer);
 
         self.presenter = g_objects::Presenter::create(
             logical_device,
@@ -194,6 +183,8 @@ impl RenderEngine {
 
         self.presenter.images_in_flight[image_index] = self.presenter.in_flight_fences[frame];
 
+        self.update_uniform_buffer(instance, logical_device, physical_device, image_index)?;
+
         let wait_semaphores = &[self.presenter.image_available_semaphores[frame]];
         let wait_stages = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
         let command_buffers = &[self.presenter.command_buffers[image_index]];
@@ -230,6 +221,48 @@ impl RenderEngine {
         } else if let Err(e) = result {
             return Err(anyhow!(e));
         }
+
+        Ok(())
+    }
+
+    pub unsafe fn update_uniform_buffer(
+        &mut self,
+        instance: &Instance,
+        logical_device: &Device,
+        physical_device: vk::PhysicalDevice,
+        image_index: usize,
+    ) -> Result<()> {
+        let time = self.start.elapsed().as_secs_f32();
+
+        let model =
+            g_types::Mat4::from_axis_angle(g_types::vec3(0.0, 0.0, 1.0), g_types::Deg(90.0) * time);
+
+        let view = g_types::Mat4::look_at_rh(
+            g_types::point3(2.0, 2.0, 2.0),
+            g_types::point3(0.0, 0.0, 0.0),
+            g_types::vec3(0.0, 0.0, 1.0),
+        );
+
+        let mut proj = cgmath::perspective(
+            g_types::Deg(45.0),
+            self.swapchain.extent.width as f32 / self.swapchain.extent.height as f32,
+            0.1,
+            10.0,
+        );
+
+        proj[1][1] *= -1.0;
+
+        let ubo = g_types::UniformBufferObject { model, view, proj };
+
+        self.buffer_memory_allocator.update_uniform_buffer(
+            ubo,
+            instance,
+            logical_device,
+            physical_device,
+            &self.queue_set,
+            self.presenter.command_pool_set,
+            image_index,
+        )?;
 
         Ok(())
     }

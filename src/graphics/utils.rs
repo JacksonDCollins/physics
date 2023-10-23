@@ -1,13 +1,12 @@
 use crate::graphics::objects as g_objects;
 use crate::graphics::types as g_types;
-use anyhow::{anyhow, Error, Result};
-use bincode::de;
-use std::collections::HashMap;
+use anyhow::{anyhow, Result};
+
 use std::collections::HashSet;
 use std::ffi::CStr;
-use std::mem::size_of;
+
 use std::os::raw::c_void;
-use std::ptr::copy_nonoverlapping as memcpy;
+
 use thiserror::Error;
 use vulkanalia::bytecode::Bytecode;
 use vulkanalia::prelude::v1_2::*;
@@ -258,7 +257,7 @@ impl QueueFamilyIndices {
             .map(|i| i as u32);
 
         let mut present = None;
-        for (index, properties) in properties.iter().enumerate() {
+        for (index, _properties) in properties.iter().enumerate() {
             if instance.get_physical_device_surface_support_khr(
                 physical_device,
                 index as u32,
@@ -421,9 +420,7 @@ fn get_swapchain_extent(window: &Window, capabilities: vk::SurfaceCapabilitiesKH
 
 pub unsafe fn create_swapchain(
     window: &Window,
-    instance: &Instance,
     logical_device: &Device,
-    physical_device: vk::PhysicalDevice,
     surface: vk::SurfaceKHR,
     queue_family_indices: &QueueFamilyIndices,
     swapchain_support: &SwapchainSupport,
@@ -467,7 +464,7 @@ pub unsafe fn create_swapchain(
 
 pub unsafe fn create_swapchain_image_views(
     logical_device: &Device,
-    images: &Vec<vk::Image>,
+    images: &[vk::Image],
     swapchain_format: vk::Format,
 ) -> Result<Vec<vk::ImageView>> {
     images
@@ -503,6 +500,7 @@ pub unsafe fn create_swapchain_image_views(
 pub unsafe fn create_pipeline_and_renderpass(
     logical_device: &Device,
     swapchain: &g_objects::Swapchain,
+    descriptor_set_layout: vk::DescriptorSetLayout,
 ) -> Result<(vk::PipelineLayout, vk::RenderPass, vk::Pipeline)> {
     let vert = include_bytes!("../../shaders/vert.spv");
     let frag = include_bytes!("../../shaders/frag.spv");
@@ -554,7 +552,7 @@ pub unsafe fn create_pipeline_and_renderpass(
         .polygon_mode(vk::PolygonMode::FILL)
         .line_width(1.0)
         .cull_mode(vk::CullModeFlags::BACK)
-        .front_face(vk::FrontFace::CLOCKWISE)
+        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
         .depth_bias_enable(false);
 
     let multisample_state = vk::PipelineMultisampleStateCreateInfo::builder()
@@ -578,8 +576,8 @@ pub unsafe fn create_pipeline_and_renderpass(
         .attachments(attachments)
         .blend_constants([0.0, 0.0, 0.0, 0.0]);
 
-    let layout_info = vk::PipelineLayoutCreateInfo::builder();
-
+    let set_layouts = &[descriptor_set_layout];
+    let layout_info = vk::PipelineLayoutCreateInfo::builder().set_layouts(set_layouts);
     let pipeline_layout = logical_device.create_pipeline_layout(&layout_info, None)?;
 
     let render_pass = create_render_pass(logical_device, swapchain)?;
@@ -736,6 +734,7 @@ pub unsafe fn create_command_buffers(
     swapchain: &g_objects::Swapchain,
     pipeline: &g_objects::Pipeline,
     buffer_memory_allocator: &mut g_objects::BufferMemoryAllocator,
+    descriptor_sets: &Vec<vk::DescriptorSet>,
 ) -> Result<Vec<vk::CommandBuffer>> {
     let allocate_info = vk::CommandBufferAllocateInfo::builder()
         .command_pool(command_pool_set.graphics)
@@ -787,17 +786,27 @@ pub unsafe fn create_command_buffers(
 
         device.cmd_bind_index_buffer(
             *command_buffer,
-            buffer_memory_allocator.index_buffer_to_allocate.buffer,
+            buffer_memory_allocator
+                .index_buffer_to_allocate
+                .get_buffer(),
             0,
             vk::IndexType::UINT16,
+        );
+
+        device.cmd_bind_descriptor_sets(
+            *command_buffer,
+            vk::PipelineBindPoint::GRAPHICS,
+            pipeline.pipeline_layout,
+            0,
+            &[descriptor_sets[i]],
+            &[],
         );
 
         device.cmd_draw_indexed(
             *command_buffer,
             buffer_memory_allocator
                 .index_buffer_to_allocate
-                .indices
-                .len() as u32,
+                .get_indice_count(),
             1,
             0,
             0,
@@ -879,59 +888,6 @@ pub unsafe fn query_swapchain_support(
     })
 }
 
-// pub unsafe fn create_vertex_buffer(
-//     instance: &Instance,
-//     physical_device: vk::PhysicalDevice,
-//     logical_device: &Device,
-//     command_pool: vk::CommandPool,
-//     queue_set: &QueueSet,
-// ) -> Result<(vk::Buffer, vk::DeviceMemory)> {
-//     let size = (size_of::<g_types::Vertex>() * g_types::VERTICES.len()) as u64;
-
-//     let (staging_buffer, staging_buffer_memory) = create_buffer(
-//         instance,
-//         logical_device,
-//         physical_device,
-//         size,
-//         vk::BufferUsageFlags::TRANSFER_SRC,
-//         vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
-//     )?;
-
-//     let memory =
-//         logical_device.map_memory(staging_buffer_memory, 0, size, vk::MemoryMapFlags::empty())?;
-
-//     memcpy(
-//         g_types::VERTICES.as_ptr(),
-//         memory.cast(),
-//         g_types::VERTICES.len(),
-//     );
-
-//     logical_device.unmap_memory(staging_buffer_memory);
-
-//     let (vertex_buffer, vertex_buffer_memory) = create_buffer(
-//         instance,
-//         logical_device,
-//         physical_device,
-//         size,
-//         vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
-//         vk::MemoryPropertyFlags::DEVICE_LOCAL,
-//     )?;
-
-//     copy_buffer(
-//         logical_device,
-//         queue_set,
-//         command_pool,
-//         staging_buffer,
-//         vertex_buffer,
-//         size,
-//     )?;
-
-//     logical_device.destroy_buffer(staging_buffer, None);
-//     logical_device.free_memory(staging_buffer_memory, None);
-
-//     Ok((vertex_buffer, vertex_buffer_memory))
-// }
-
 pub unsafe fn get_memory_type_index(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
@@ -1009,6 +965,7 @@ pub unsafe fn copy_buffer(
     destination: vk::Buffer,
     size: vk::DeviceSize,
     src_offset: u64,
+    dst_offset: u64,
 ) -> Result<()> {
     let info = vk::CommandBufferAllocateInfo::builder()
         .level(vk::CommandBufferLevel::PRIMARY)
@@ -1022,7 +979,10 @@ pub unsafe fn copy_buffer(
 
     device.begin_command_buffer(command_buffer, &info)?;
 
-    let regions = vk::BufferCopy::builder().size(size).src_offset(src_offset);
+    let regions = vk::BufferCopy::builder()
+        .size(size)
+        .src_offset(src_offset)
+        .dst_offset(dst_offset);
     device.cmd_copy_buffer(command_buffer, source, destination, &[regions]);
 
     device.end_command_buffer(command_buffer)?;
@@ -1057,4 +1017,83 @@ pub unsafe fn get_memory_info(
             requirements,
         )?)
         .build())
+}
+
+pub unsafe fn create_descriptor_set_layout(
+    logical_device: &Device,
+) -> Result<vk::DescriptorSetLayout> {
+    let ubo_binding = vk::DescriptorSetLayoutBinding::builder()
+        .binding(0)
+        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+        .descriptor_count(1)
+        .stage_flags(vk::ShaderStageFlags::VERTEX);
+
+    let bindings = &[ubo_binding];
+    let info = vk::DescriptorSetLayoutCreateInfo::builder().bindings(bindings);
+
+    logical_device
+        .create_descriptor_set_layout(&info, None)
+        .map_err(|e| anyhow!("{}", e))
+}
+
+pub fn align_up(value: u64, alignment: u64) -> u64 {
+    (value + alignment - 1) & !(alignment - 1)
+}
+
+pub unsafe fn create_descriptor_pool(
+    logical_device: &Device,
+    swapchain_images_count: u32,
+) -> Result<vk::DescriptorPool> {
+    let ubo_size = vk::DescriptorPoolSize::builder()
+        .type_(vk::DescriptorType::UNIFORM_BUFFER)
+        .descriptor_count(swapchain_images_count);
+
+    let pool_sizes = &[ubo_size];
+    let info = vk::DescriptorPoolCreateInfo::builder()
+        .pool_sizes(pool_sizes)
+        .max_sets(swapchain_images_count);
+
+    logical_device
+        .create_descriptor_pool(&info, None)
+        .map_err(|e| anyhow!("{}", e))
+}
+
+pub unsafe fn create_descriptor_sets(
+    logical_device: &Device,
+    descriptor_set_layout: vk::DescriptorSetLayout,
+    descriptor_pool: vk::DescriptorPool,
+    swapchain_images_count: usize,
+) -> Result<Vec<vk::DescriptorSet>> {
+    let layouts = vec![descriptor_set_layout; swapchain_images_count];
+    let info = vk::DescriptorSetAllocateInfo::builder()
+        .descriptor_pool(descriptor_pool)
+        .set_layouts(&layouts);
+
+    let descriptor_sets = logical_device.allocate_descriptor_sets(&info)?;
+
+    Ok(descriptor_sets)
+}
+
+pub unsafe fn update_descriptor_sets(
+    logical_device: &Device,
+    swapchain_images_count: usize,
+    uniform_buffers: &[g_objects::UniformBuffer],
+    descriptor_sets: &[vk::DescriptorSet],
+) {
+    for i in 0..swapchain_images_count {
+        let info = vk::DescriptorBufferInfo::builder()
+            .buffer(uniform_buffers[i].get_buffer())
+            .offset(0)
+            .range(uniform_buffers[i].get_size());
+        let buffer_info = &[info];
+
+        let ubo_write = vk::WriteDescriptorSet::builder()
+            .dst_set(descriptor_sets[i])
+            .dst_binding(0)
+            .dst_array_element(0)
+            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+            .buffer_info(buffer_info);
+
+        logical_device.update_descriptor_sets(&[ubo_write], &[] as &[vk::CopyDescriptorSet]);
+    }
 }

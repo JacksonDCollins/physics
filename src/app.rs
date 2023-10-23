@@ -2,7 +2,7 @@ use crate::graphics;
 use crate::graphics::utils as g_utils;
 use anyhow::{anyhow, Result};
 use vulkanalia::prelude::v1_2::*;
-use vulkanalia::vk::{ExtDebugUtilsExtension, KhrSurfaceExtension};
+use vulkanalia::vk::ExtDebugUtilsExtension;
 use vulkanalia::{
     loader::{LibloadingLoader, LIBRARY},
     Entry,

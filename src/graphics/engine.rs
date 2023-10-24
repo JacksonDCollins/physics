@@ -17,7 +17,6 @@ pub struct RenderEngine {
     swapchain: g_objects::Swapchain,
     pipeline: g_objects::Pipeline,
     presenter: g_objects::Presenter,
-    textures: g_objects::TextureEngine,
 
     buffer_memory_allocator: g_objects::BufferMemoryAllocator,
     queue_family_indices: g_utils::QueueFamilyIndices,
@@ -78,15 +77,12 @@ impl RenderEngine {
             &queue_set,
         )?;
 
-        let textures = g_objects::TextureEngine::create(instance, logical_device, physical_device)?;
-
         Ok(Self {
             surface,
             queue_set,
             swapchain,
             pipeline,
             presenter,
-            textures,
 
             buffer_memory_allocator,
             queue_family_indices,
@@ -186,7 +182,7 @@ impl RenderEngine {
 
         self.presenter.images_in_flight[image_index] = self.presenter.in_flight_fences[frame];
 
-        self.update_uniform_buffer(instance, logical_device, physical_device, image_index)?;
+        self.update_uniform_buffer(image_index)?;
 
         let wait_semaphores = &[self.presenter.image_available_semaphores[frame]];
         let wait_stages = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -228,13 +224,7 @@ impl RenderEngine {
         Ok(())
     }
 
-    pub unsafe fn update_uniform_buffer(
-        &mut self,
-        instance: &Instance,
-        logical_device: &Device,
-        physical_device: vk::PhysicalDevice,
-        image_index: usize,
-    ) -> Result<()> {
+    pub unsafe fn update_uniform_buffer(&mut self, image_index: usize) -> Result<()> {
         let time = self.start.elapsed().as_secs_f32();
 
         let model =
@@ -265,7 +255,6 @@ impl RenderEngine {
 
     pub unsafe fn destroy(&mut self, logical_device: &Device, instance: &Instance) {
         self.buffer_memory_allocator.destroy(logical_device);
-        self.textures.destroy(logical_device);
         self.presenter.destroy(logical_device);
         self.pipeline.destroy(logical_device);
         self.swapchain.destroy(logical_device);

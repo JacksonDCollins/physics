@@ -55,3 +55,5 @@ fn main() -> Result<()> {
         }
     });
 }
+
+//https://kylemayes.github.io/vulkanalia/model/depth_buffering.html

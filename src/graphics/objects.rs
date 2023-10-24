@@ -101,6 +101,7 @@ pub struct Presenter {
     pub render_finished_semaphores: Vec<vk::Semaphore>,
     pub in_flight_fences: Vec<vk::Fence>,
     pub images_in_flight: Vec<vk::Fence>,
+    texture_engine: TextureEngine,
 }
 
 impl Presenter {
@@ -136,11 +137,22 @@ impl Presenter {
             command_pool_set,
         )?;
 
+        let texture_engine = TextureEngine::create(
+            instance,
+            logical_device,
+            physical_device,
+            &command_pool_set,
+            queue_set,
+            queue_family_indices,
+        )?;
+
         g_utils::update_descriptor_sets(
             logical_device,
             swapchain.images.len(),
             &buffer_memory_allocator.uniform_buffers_to_allocate,
             &descriptor_sets,
+            texture_engine.texture_image_view,
+            texture_engine.texture_sampler,
         );
 
         let command_buffers = g_utils::create_command_buffers(
@@ -169,6 +181,7 @@ impl Presenter {
             render_finished_semaphores,
             in_flight_fences,
             images_in_flight,
+            texture_engine,
         })
     }
 
@@ -187,6 +200,7 @@ impl Presenter {
         self.framebuffers
             .iter()
             .for_each(|framebuffer| logical_device.destroy_framebuffer(*framebuffer, None));
+        self.texture_engine.destroy(logical_device);
     }
 }
 
@@ -692,6 +706,8 @@ impl BufferMemoryAllocator {
 pub struct TextureEngine {
     texture_image: vk::Image,
     texture_image_memory: vk::DeviceMemory,
+    texture_image_view: vk::ImageView,
+    texture_sampler: vk::Sampler,
 }
 
 impl TextureEngine {
@@ -699,14 +715,35 @@ impl TextureEngine {
         instance: &Instance,
         logical_device: &Device,
         physical_device: vk::PhysicalDevice,
+        command_pool_set: &g_types::CommandPoolSet,
+        queue_set: &g_utils::QueueSet,
+        queue_family_indices: &g_utils::QueueFamilyIndices,
     ) -> Result<Self> {
-        let (texture_image, texture_image_memory) =
-            g_utils::create_texture_image(instance, logical_device, physical_device)?;
+        let (texture_image, texture_image_memory) = g_utils::create_texture_image(
+            instance,
+            logical_device,
+            physical_device,
+            command_pool_set,
+            queue_set,
+            queue_family_indices,
+        )?;
+
+        let texture_image_view = g_utils::create_texture_image_view(logical_device, texture_image)?;
+
+        let texture_sampler = g_utils::create_texture_sampler(logical_device)?;
+
         Ok(Self {
             texture_image,
             texture_image_memory,
+            texture_image_view,
+            texture_sampler,
         })
     }
 
-    pub unsafe fn destroy(&self, logical_device: &Device) {}
+    pub unsafe fn destroy(&self, logical_device: &Device) {
+        logical_device.destroy_sampler(self.texture_sampler, None);
+        logical_device.destroy_image_view(self.texture_image_view, None);
+        logical_device.destroy_image(self.texture_image, None);
+        logical_device.free_memory(self.texture_image_memory, None);
+    }
 }

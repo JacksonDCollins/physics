@@ -17,6 +17,7 @@ pub struct RenderEngine {
     swapchain: g_objects::Swapchain,
     pipeline: g_objects::Pipeline,
     presenter: g_objects::Presenter,
+    textures: g_objects::TextureEngine,
 
     buffer_memory_allocator: g_objects::BufferMemoryAllocator,
     queue_family_indices: g_utils::QueueFamilyIndices,
@@ -49,28 +50,17 @@ impl RenderEngine {
         let mut buffer_memory_allocator = g_objects::BufferMemoryAllocator::create()?;
 
         for _i in 0..1 {
-            let vertex_buffer = g_objects::VertexBuffer::create(
-                // instance,
-                // physical_device,
-                logical_device,
-                &g_types::VERTICES,
-            )?;
+            let vertex_buffer =
+                g_objects::VertexBuffer::create(logical_device, &g_types::VERTICES)?;
             buffer_memory_allocator.add_vertex_buffer(vertex_buffer);
         }
 
-        let index_buffer = g_objects::IndexBuffer::create(
-            // instance,
-            // physical_device,
-            logical_device,
-            g_types::INDICES,
-        )?;
+        let index_buffer = g_objects::IndexBuffer::create(logical_device, g_types::INDICES)?;
 
         buffer_memory_allocator.set_index_buffer(index_buffer);
 
         for _ in 0..swapchain.images.len() {
             let uniform_buffer = g_objects::UniformBuffer::create(
-                // instance,
-                // physical_device,
                 logical_device,
                 g_types::UniformBufferObject::default(),
             )?;
@@ -88,12 +78,15 @@ impl RenderEngine {
             &queue_set,
         )?;
 
+        let textures = g_objects::TextureEngine::create(instance, logical_device, physical_device)?;
+
         Ok(Self {
             surface,
             queue_set,
             swapchain,
             pipeline,
             presenter,
+            textures,
 
             buffer_memory_allocator,
             queue_family_indices,
@@ -166,7 +159,17 @@ impl RenderEngine {
         );
 
         let image_index = match result {
-            Ok((image_index, _)) => image_index as usize,
+            Ok(res) => match res {
+                (_, vk::SuccessCode::SUBOPTIMAL_KHR) => {
+                    return self.recreate_sawpchain(
+                        window,
+                        instance,
+                        logical_device,
+                        physical_device,
+                    )
+                }
+                (index, _) => index as usize,
+            },
             Err(vk::ErrorCode::OUT_OF_DATE_KHR) => {
                 return self.recreate_sawpchain(window, instance, logical_device, physical_device)
             }
@@ -254,21 +257,15 @@ impl RenderEngine {
 
         let ubo = g_types::UniformBufferObject { model, view, proj };
 
-        self.buffer_memory_allocator.update_uniform_buffer(
-            ubo,
-            instance,
-            logical_device,
-            physical_device,
-            &self.queue_set,
-            self.presenter.command_pool_set,
-            image_index,
-        )?;
+        self.buffer_memory_allocator
+            .update_uniform_buffer(ubo, image_index)?;
 
         Ok(())
     }
 
     pub unsafe fn destroy(&mut self, logical_device: &Device, instance: &Instance) {
         self.buffer_memory_allocator.destroy(logical_device);
+        self.textures.destroy(logical_device);
         self.presenter.destroy(logical_device);
         self.pipeline.destroy(logical_device);
         self.swapchain.destroy(logical_device);

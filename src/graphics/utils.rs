@@ -7,12 +7,15 @@ use std::ffi::CStr;
 
 use std::os::raw::c_void;
 
+use std::fs::File;
 use thiserror::Error;
 use vulkanalia::bytecode::Bytecode;
 use vulkanalia::prelude::v1_2::*;
 use vulkanalia::vk::{ExtDebugUtilsExtension, KhrSurfaceExtension, KhrSwapchainExtension};
 use vulkanalia::{Entry, Version};
 use winit::window::Window;
+
+pub use std::ptr::copy_nonoverlapping as memcpy;
 
 pub const VALIDATION_ENABLED: bool = cfg!(debug_assertions);
 pub const VALIDATION_LAYER: vk::ExtensionName =
@@ -429,7 +432,7 @@ pub unsafe fn create_swapchain(
     let present_mode = get_swapchain_present_mode(&swapchain_support.present_modes);
     let extent = get_swapchain_extent(window, swapchain_support.capabilities);
 
-    let mut image_count = swapchain_support.capabilities.min_image_count + 1;
+    let mut image_count = (swapchain_support.capabilities.min_image_count + 1).max(3);
     if swapchain_support.capabilities.max_image_count != 0
         && image_count > swapchain_support.capabilities.max_image_count
     {
@@ -1096,4 +1099,97 @@ pub unsafe fn update_descriptor_sets(
 
         logical_device.update_descriptor_sets(&[ubo_write], &[] as &[vk::CopyDescriptorSet]);
     }
+}
+
+pub unsafe fn create_texture_image(
+    instance: &Instance,
+    logical_device: &Device,
+    physical_device: vk::PhysicalDevice,
+) -> Result<(vk::Image, vk::DeviceMemory)> {
+    let image = File::open("resources/texture.png")?;
+
+    let decoder = png::Decoder::new(image);
+    let mut reader = decoder.read_info()?;
+
+    let mut pixels = vec![0; reader.info().raw_bytes()];
+    reader.next_frame(&mut pixels)?;
+
+    let size = reader.info().raw_bytes() as u64;
+    let (width, height) = reader.info().size();
+
+    let (staging_buffer, staging_buffer_memory, _) = create_buffer_and_memory(
+        instance,
+        logical_device,
+        physical_device,
+        size,
+        vk::BufferUsageFlags::TRANSFER_SRC,
+        vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
+    )?;
+
+    let memory =
+        logical_device.map_memory(staging_buffer_memory, 0, size, vk::MemoryMapFlags::empty())?;
+
+    memcpy(pixels.as_ptr(), memory.cast(), pixels.len());
+
+    logical_device.unmap_memory(staging_buffer_memory);
+
+    create_image(
+        instance,
+        logical_device,
+        physical_device,
+        width,
+        height,
+        vk::Format::R8G8B8A8_SRGB,
+        vk::ImageTiling::OPTIMAL,
+        vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
+        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+    )
+    //TODO here https://kylemayes.github.io/vulkanalia/texture/images.html
+}
+
+unsafe fn create_image(
+    instance: &Instance,
+    logical_device: &Device,
+    physical_device: vk::PhysicalDevice,
+    width: u32,
+    height: u32,
+    format: vk::Format,
+    tiling: vk::ImageTiling,
+    usage: vk::ImageUsageFlags,
+    properties: vk::MemoryPropertyFlags,
+) -> Result<(vk::Image, vk::DeviceMemory)> {
+    let info = vk::ImageCreateInfo::builder()
+        .image_type(vk::ImageType::_2D)
+        .extent(vk::Extent3D {
+            width,
+            height,
+            depth: 1,
+        })
+        .mip_levels(1)
+        .array_layers(1)
+        .format(format)
+        .tiling(tiling)
+        .initial_layout(vk::ImageLayout::UNDEFINED)
+        .usage(usage)
+        .samples(vk::SampleCountFlags::_1)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+    let image = logical_device.create_image(&info, None)?;
+
+    let requirements = logical_device.get_image_memory_requirements(image);
+
+    let info = vk::MemoryAllocateInfo::builder()
+        .allocation_size(requirements.size)
+        .memory_type_index(get_memory_type_index(
+            instance,
+            physical_device,
+            properties,
+            requirements,
+        )?);
+
+    let image_memory = logical_device.allocate_memory(&info, None)?;
+
+    logical_device.bind_image_memory(image, image_memory, 0)?;
+
+    Ok((image, image_memory))
 }

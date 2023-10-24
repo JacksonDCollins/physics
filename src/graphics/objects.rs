@@ -4,6 +4,7 @@ use crate::graphics::types as g_types;
 use crate::graphics::utils as g_utils;
 use anyhow::Result;
 
+use rand::distributions::uniform;
 use vulkanalia::prelude::v1_2::*;
 use vulkanalia::vk::KhrSwapchainExtension;
 
@@ -201,18 +202,13 @@ pub struct VertexBuffer {
 impl VertexBuffer {
     pub unsafe fn create(_logical_device: &Device, vertices: &[g_types::Vertex]) -> Result<Self> {
         let size = std::mem::size_of_val(vertices) as u64;
-        // let vertex_buffer = g_utils::create_buffer(
-        //     logical_device,
-        //     size,
-        //     vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
-        // )?;
 
         Ok(Self {
             buffer: vk::Buffer::null(), //vertex_buffer,
             vertices: vertices.to_vec(),
             size: Some(size),
             offset: None,
-            changed: true,
+            changed: false,
         })
     }
 
@@ -228,7 +224,6 @@ impl VertexBuffer {
                 self.size.unwrap(),
                 vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
             )?;
-            self.changed = true;
         }
 
         Ok(())
@@ -250,18 +245,13 @@ impl UniformBuffer {
         ubo: g_types::UniformBufferObject,
     ) -> Result<Self> {
         let size = std::mem::size_of_val(&ubo) as u64;
-        // let uniform_buffer = g_utils::create_buffer(
-        //     logical_device,
-        //     size,
-        //     vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::UNIFORM_BUFFER,
-        // )?;
 
         Ok(Self {
             buffer: vk::Buffer::null(), //uniform_buffer,
             ubo,
             size: Some(size),
             offset: None,
-            changed: true,
+            changed: false,
         })
     }
 
@@ -281,7 +271,6 @@ impl UniformBuffer {
     pub unsafe fn update(&mut self, ubo: g_types::UniformBufferObject) {
         self.size = Some(std::mem::size_of_val(&ubo) as u64);
         self.ubo = ubo;
-        self.changed = true;
     }
 
     pub unsafe fn create_buffer(&mut self, logical_device: &Device) -> Result<()> {
@@ -289,9 +278,8 @@ impl UniformBuffer {
             self.buffer = g_utils::create_buffer(
                 logical_device,
                 self.size.unwrap(),
-                vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::UNIFORM_BUFFER,
+                vk::BufferUsageFlags::UNIFORM_BUFFER,
             )?;
-            self.changed = true;
         }
 
         Ok(())
@@ -310,18 +298,13 @@ pub struct IndexBuffer {
 impl IndexBuffer {
     pub unsafe fn create(_logical_device: &Device, indices: &[u16]) -> Result<Self> {
         let size = std::mem::size_of_val(indices) as u64;
-        // let index_buffer = g_utils::create_buffer(
-        //     logical_device,
-        //     size,
-        //     vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDEX_BUFFER,
-        // )?;
 
         Ok(Self {
             buffer: vk::Buffer::null(), // index_buffer,
             indices: indices.to_vec(),
             size: Some(size),
             offset: None,
-            changed: true,
+            changed: false,
         })
     }
 
@@ -355,7 +338,6 @@ impl IndexBuffer {
                 self.size.unwrap(),
                 vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDEX_BUFFER,
             )?;
-            self.changed = true;
         }
         Ok(())
     }
@@ -363,8 +345,11 @@ impl IndexBuffer {
 
 #[derive(Debug)]
 pub struct BufferMemoryAllocator {
-    pub memory: vk::DeviceMemory,
-    pub buffer: vk::Buffer,
+    pub vertex_index_memory: vk::DeviceMemory,
+    pub vertex_index_buffer: vk::Buffer,
+    pub uniform_memory: vk::DeviceMemory,
+    pub uniform_buffer: vk::Buffer,
+    pub uniform_memory_ptr: *mut c_void,
     pub staging_memory: vk::DeviceMemory,
     pub staging_buffer: vk::Buffer,
     pub stage_memory_ptr: *mut c_void,
@@ -372,7 +357,6 @@ pub struct BufferMemoryAllocator {
     pub index_buffer_to_allocate: IndexBuffer,
     pub uniform_buffers_to_allocate: Vec<UniformBuffer>,
     pub changed: bool,
-    pub allocated_bytes: u64,
 }
 
 impl BufferMemoryAllocator {
@@ -380,8 +364,11 @@ impl BufferMemoryAllocator {
         log::info!("Creating buffer memory allocator");
 
         Ok(Self {
-            memory: vk::DeviceMemory::null(),
-            buffer: vk::Buffer::null(),
+            vertex_index_memory: vk::DeviceMemory::null(),
+            vertex_index_buffer: vk::Buffer::null(),
+            uniform_memory: vk::DeviceMemory::null(),
+            uniform_buffer: vk::Buffer::null(),
+            uniform_memory_ptr: std::ptr::null_mut(),
             staging_buffer: vk::Buffer::null(),
             staging_memory: vk::DeviceMemory::null(),
             stage_memory_ptr: std::ptr::null_mut(),
@@ -389,7 +376,6 @@ impl BufferMemoryAllocator {
             index_buffer_to_allocate: IndexBuffer::null(),
             uniform_buffers_to_allocate: Vec::new(),
             changed: false,
-            allocated_bytes: 0,
         })
     }
 
@@ -462,7 +448,6 @@ impl BufferMemoryAllocator {
         physical_device: vk::PhysicalDevice,
         size: u64,
     ) -> Result<(vk::Buffer, vk::DeviceMemory, *mut c_void)> {
-        let size = size * 2;
         let (staging_buffer, staging_buffer_memory, _) = g_utils::create_buffer_and_memory(
             instance,
             logical_device,
@@ -485,44 +470,18 @@ impl BufferMemoryAllocator {
     pub unsafe fn update_uniform_buffer(
         &mut self,
         ubo: g_types::UniformBufferObject,
-        instance: &Instance,
-        logical_device: &Device,
-        physical_device: vk::PhysicalDevice,
-        queue_set: &g_utils::QueueSet,
-        command_pool_set: g_types::CommandPoolSet,
         buffer_index: usize,
     ) -> Result<()> {
         let buffer = &mut self.uniform_buffers_to_allocate[buffer_index];
         buffer.update(ubo);
-        buffer.changed = false;
 
-        let size = buffer.size.unwrap();
-
-        if self.stage_memory_ptr.is_null() {
-            let (staging_buffer, staging_buffer_memory, memory_ptr) =
-                Self::create_and_map_staging_buffer_and_memory(
-                    instance,
-                    logical_device,
-                    physical_device,
-                    size,
-                )?;
-            self.staging_buffer = staging_buffer;
-            self.staging_memory = staging_buffer_memory;
-            self.stage_memory_ptr = memory_ptr;
-        }
-
-        std::ptr::copy_nonoverlapping(&[buffer.ubo], self.stage_memory_ptr.cast(), 1);
-
-        g_utils::copy_buffer(
-            logical_device,
-            queue_set.transfer,
-            command_pool_set.transfer,
-            self.staging_buffer,
-            self.buffer,
-            size,
-            0,
-            buffer.offset.unwrap(),
-        )?;
+        g_utils::memcpy(
+            &[buffer.ubo],
+            self.uniform_memory_ptr
+                .add(buffer.offset.unwrap() as usize)
+                .cast(),
+            1,
+        );
 
         Ok(())
     }
@@ -539,9 +498,10 @@ impl BufferMemoryAllocator {
         if !self.changed {
             return Ok(());
         }
+        // self.destroy_buffers(logical_device);
+        // self.create_buffers(logical_device)?;
         self.reset_changes();
         self.changed = false;
-        self.allocated_bytes = 0;
 
         log::info!("Allocating memory for buffers");
 
@@ -553,13 +513,7 @@ impl BufferMemoryAllocator {
 
         let index_size = self.index_buffer_to_allocate.size.unwrap_or(0);
 
-        let uniform_size = self
-            .uniform_buffers_to_allocate
-            .iter()
-            .filter(|buffer| buffer.size.is_some())
-            .fold(0, |acc, buffer| acc + buffer.size.unwrap());
-
-        let total_size = vertex_size + index_size + uniform_size;
+        let vertex_index_size = vertex_size + index_size;
 
         if self.stage_memory_ptr.is_null() {
             let (staging_buffer, staging_buffer_memory, memory_ptr) =
@@ -567,11 +521,34 @@ impl BufferMemoryAllocator {
                     instance,
                     logical_device,
                     physical_device,
-                    total_size,
+                    vertex_index_size * 2,
                 )?;
             self.staging_buffer = staging_buffer;
             self.staging_memory = staging_buffer_memory;
             self.stage_memory_ptr = memory_ptr;
+        }
+
+        if self.uniform_memory_ptr.is_null() {
+            let size = (std::mem::size_of::<g_types::UniformBufferObject>()
+                * self.uniform_buffers_to_allocate.len()) as u64;
+            let (uniform_buffer, uniform_buffer_memory, _) = g_utils::create_buffer_and_memory(
+                instance,
+                logical_device,
+                physical_device,
+                size * 4,
+                vk::BufferUsageFlags::UNIFORM_BUFFER,
+                vk::MemoryPropertyFlags::DEVICE_LOCAL | vk::MemoryPropertyFlags::HOST_VISIBLE,
+            )?;
+
+            let memory_ptr = logical_device.map_memory(
+                uniform_buffer_memory,
+                0,
+                size,
+                vk::MemoryMapFlags::empty(),
+            )?;
+            self.uniform_buffer = uniform_buffer;
+            self.uniform_memory = uniform_buffer_memory;
+            self.uniform_memory_ptr = memory_ptr;
         }
 
         let mut offset = 0;
@@ -584,8 +561,8 @@ impl BufferMemoryAllocator {
                     .alignment;
                 offset = g_utils::align_up(offset, alignment);
                 let dst = self.stage_memory_ptr.add(offset as usize).cast();
-                std::ptr::copy_nonoverlapping(buffer.vertices.as_ptr(), dst, buffer.vertices.len());
-                buffer.offset = Some(offset + self.allocated_bytes);
+                g_utils::memcpy(buffer.vertices.as_ptr(), dst, buffer.vertices.len());
+                buffer.offset = Some(offset);
                 offset += buffer.size.unwrap();
             });
 
@@ -595,50 +572,36 @@ impl BufferMemoryAllocator {
                 .alignment;
             offset = g_utils::align_up(offset, alignment);
             let dst = self.stage_memory_ptr.add(offset as usize).cast();
-            std::ptr::copy_nonoverlapping(
+            g_utils::memcpy(
                 self.index_buffer_to_allocate.indices.as_ptr(),
                 dst,
                 self.index_buffer_to_allocate.indices.len(),
             );
-            self.index_buffer_to_allocate.offset = Some(offset + self.allocated_bytes);
-            offset += self.index_buffer_to_allocate.size.unwrap();
+            self.index_buffer_to_allocate.offset = Some(offset);
         }
 
-        self.uniform_buffers_to_allocate
-            .iter_mut()
-            .filter(|buffer| buffer.size.is_some())
-            .for_each(|buffer| {
-                let alignment = logical_device
-                    .get_buffer_memory_requirements(buffer.buffer)
-                    .alignment;
-                offset = g_utils::align_up(offset, alignment);
-                let dst = self.stage_memory_ptr.add(offset as usize).cast();
-                std::ptr::copy_nonoverlapping(&[buffer.ubo], dst, 1);
-                buffer.offset = Some(offset + self.allocated_bytes);
-                offset += buffer.size.unwrap();
-            });
-
-        (self.buffer, self.memory, _) = g_utils::create_buffer_and_memory(
-            instance,
-            logical_device,
-            physical_device,
-            total_size * 4,
-            vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
-        )?;
+        (self.vertex_index_buffer, self.vertex_index_memory, _) =
+            g_utils::create_buffer_and_memory(
+                instance,
+                logical_device,
+                physical_device,
+                vertex_index_size * 4,
+                vk::BufferUsageFlags::TRANSFER_DST
+                    | vk::BufferUsageFlags::VERTEX_BUFFER
+                    | vk::BufferUsageFlags::INDEX_BUFFER,
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            )?;
 
         g_utils::copy_buffer(
             logical_device,
             queue_set.transfer,
             command_pool_set.transfer,
             self.staging_buffer,
-            self.buffer,
-            total_size,
+            self.vertex_index_buffer,
+            vertex_index_size,
             0,
-            self.allocated_bytes,
+            0,
         )?;
-
-        self.allocated_bytes += total_size;
 
         for buffer in self
             .vertex_buffers_to_allocate
@@ -647,7 +610,7 @@ impl BufferMemoryAllocator {
         {
             logical_device.bind_buffer_memory(
                 buffer.buffer,
-                self.memory,
+                self.vertex_index_memory,
                 buffer.offset.unwrap(),
             )?;
         }
@@ -655,21 +618,25 @@ impl BufferMemoryAllocator {
         if self.index_buffer_to_allocate.offset.is_some() {
             logical_device.bind_buffer_memory(
                 self.index_buffer_to_allocate.buffer,
-                self.memory,
+                self.vertex_index_memory,
                 self.index_buffer_to_allocate.offset.unwrap(),
             )?;
         }
 
+        let mut offset = 0;
         for buffer in self
             .uniform_buffers_to_allocate
-            .iter()
-            .filter(|buffer| buffer.offset.is_some())
+            .iter_mut()
+            .filter(|buffer| buffer.size.is_some())
         {
-            logical_device.bind_buffer_memory(
-                buffer.buffer,
-                self.memory,
-                buffer.offset.unwrap(),
-            )?;
+            let alignment = logical_device
+                .get_buffer_memory_requirements(buffer.buffer)
+                .alignment;
+            offset = g_utils::align_up(offset, alignment);
+
+            logical_device.bind_buffer_memory(buffer.buffer, self.uniform_memory, offset)?;
+            buffer.offset = Some(offset);
+            offset += buffer.size.unwrap();
         }
 
         Ok(())
@@ -677,21 +644,35 @@ impl BufferMemoryAllocator {
 
     pub unsafe fn destroy(&mut self, logical_device: &Device) {
         log::info!("Destroying buffer memory allocator");
-        self.vertex_buffers_to_allocate
-            .iter_mut()
-            .for_each(|buffer| buffer.destroy(logical_device));
-        self.index_buffer_to_allocate.destroy(logical_device);
-        self.uniform_buffers_to_allocate
-            .iter_mut()
-            .for_each(|buffer| buffer.destroy(logical_device));
+        self.destroy_buffers(logical_device);
 
-        logical_device.destroy_buffer(self.buffer, None);
-        logical_device.free_memory(self.memory, None);
+        logical_device.destroy_buffer(self.vertex_index_buffer, None);
+        logical_device.free_memory(self.vertex_index_memory, None);
 
         logical_device.unmap_memory(self.staging_memory);
         self.stage_memory_ptr = std::ptr::null_mut();
         logical_device.destroy_buffer(self.staging_buffer, None);
         logical_device.free_memory(self.staging_memory, None);
+
+        logical_device.unmap_memory(self.uniform_memory);
+        self.uniform_memory_ptr = std::ptr::null_mut();
+        logical_device.destroy_buffer(self.uniform_buffer, None);
+        logical_device.free_memory(self.uniform_memory, None);
+    }
+
+    pub unsafe fn destroy_buffers(&mut self, logical_device: &Device) {
+        log::info!("Destroying buffers");
+        self.vertex_buffers_to_allocate
+            .iter_mut()
+            .filter(|buffer| !buffer.buffer.is_null())
+            .for_each(|buffer| buffer.destroy(logical_device));
+        if !self.index_buffer_to_allocate.buffer.is_null() {
+            self.index_buffer_to_allocate.destroy(logical_device);
+        }
+        self.uniform_buffers_to_allocate
+            .iter_mut()
+            .filter(|buffer| !buffer.buffer.is_null())
+            .for_each(|buffer| buffer.destroy(logical_device));
     }
 
     pub unsafe fn create_buffers(&mut self, logical_device: &Device) -> Result<()> {
@@ -706,4 +687,26 @@ impl BufferMemoryAllocator {
         }
         Ok(())
     }
+}
+
+pub struct TextureEngine {
+    texture_image: vk::Image,
+    texture_image_memory: vk::DeviceMemory,
+}
+
+impl TextureEngine {
+    pub unsafe fn create(
+        instance: &Instance,
+        logical_device: &Device,
+        physical_device: vk::PhysicalDevice,
+    ) -> Result<Self> {
+        let (texture_image, texture_image_memory) =
+            g_utils::create_texture_image(instance, logical_device, physical_device)?;
+        Ok(Self {
+            texture_image,
+            texture_image_memory,
+        })
+    }
+
+    pub unsafe fn destroy(&self, logical_device: &Device) {}
 }

@@ -55,7 +55,3 @@ fn main() -> Result<()> {
         }
     });
 }
-
-//https://www.google.com/search?q=vulkan+uniformbuffer+best+practice&client=firefox-b-d&sca_esv=575810318&sxsrf=AM9HkKlfXWui_2hH5EYS0Ru6nfYTiekTzw%3A1698073422428&ei=Tos2ZYroGZ_f2roPlaSnoA0&ved=0ahUKEwiKx5W5uIyCAxWfr1YBHRXSCdQQ4dUDCA8&uact=5&oq=vulkan+uniformbuffer+best+practice&gs_lp=Egxnd3Mtd2l6LXNlcnAiInZ1bGthbiB1bmlmb3JtYnVmZmVyIGJlc3QgcHJhY3RpY2UyBxAhGKABGAoyBxAhGKABGApI3ixQAFjEK3AAeACQAQCYAe8BoAGVMaoBBzAuMjEuMTG4AQPIAQD4AQHCAgQQIxgnwgIIEAAYigUYkQLCAgcQABiKBRhDwgIREC4YgAQYsQMYgwEYxwEY0QPCAgsQABiABBixAxiDAcICDhAuGIoFGLEDGMcBGNEDwgIKEAAYigUYsQMYQ8ICCxAuGIAEGMcBGK8BwgIKEAAYgAQYFBiHAsICBRAAGIAEwgIHECMYsAIYJ8ICBxAAGA0YgATCAgYQABgeGA3CAggQABgIGB4YDcICBhAAGBYYHsICCBAAGIoFGIYDwgIGECEYFRgKwgIEECEYCsICChAhGBYYHhgdGAriAwQYACBBiAYB&sclient=gws-wiz-serp
-
-//https://kylemayes.github.io/vulkanalia/texture/images.html

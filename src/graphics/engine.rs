@@ -22,6 +22,7 @@ pub struct RenderEngine {
     texture_engine: g_objects::TextureMemoryAllocator,
     queue_family_indices: g_utils::QueueFamilyIndices,
     swapchain_support: g_utils::SwapchainSupport,
+    msaa_samples: vk::SampleCountFlags,
 
     start: Instant,
 }
@@ -36,6 +37,7 @@ impl RenderEngine {
         queue_set: g_utils::QueueSet,
         queue_family_indices: g_utils::QueueFamilyIndices,
         swapchain_support: g_utils::SwapchainSupport,
+        msaa_samples: vk::SampleCountFlags,
     ) -> Result<Self> {
         let swapchain = g_objects::Swapchain::create(
             window,
@@ -45,20 +47,21 @@ impl RenderEngine {
             &swapchain_support,
         )?;
 
-        let pipeline =
-            g_objects::Pipeline::create(instance, logical_device, physical_device, &swapchain)?;
+        let pipeline = g_objects::Pipeline::create(
+            instance,
+            logical_device,
+            physical_device,
+            &swapchain,
+            msaa_samples,
+        )?;
 
         let mut buffer_memory_allocator = g_objects::BufferMemoryAllocator::create()?;
 
-        for _i in 0..1 {
-            let vertex_buffer =
-                g_objects::VertexBuffer::create(logical_device, &g_types::VERTICES)?;
-            buffer_memory_allocator.add_vertex_buffer(vertex_buffer);
-        }
+        let model = g_objects::Model::create()?;
 
-        let index_buffer = g_objects::IndexBuffer::create(logical_device, g_types::INDICES)?;
+        buffer_memory_allocator.add_vertex_buffer(model.vertex_buffer);
 
-        buffer_memory_allocator.set_index_buffer(index_buffer);
+        buffer_memory_allocator.set_index_buffer(model.index_buffer);
 
         for _ in 0..swapchain.images.len() {
             let uniform_buffer = g_objects::UniformBuffer::create(
@@ -84,6 +87,7 @@ impl RenderEngine {
             instance,
             physical_device,
             &queue_set,
+            msaa_samples,
         )?;
 
         Ok(Self {
@@ -97,6 +101,7 @@ impl RenderEngine {
             texture_engine,
             queue_family_indices,
             swapchain_support,
+            msaa_samples,
 
             start: Instant::now(),
         })
@@ -131,6 +136,7 @@ impl RenderEngine {
             logical_device,
             physical_device,
             &self.swapchain,
+            self.msaa_samples,
         )?;
 
         self.presenter = g_objects::Presenter::create(
@@ -143,6 +149,7 @@ impl RenderEngine {
             instance,
             physical_device,
             &self.queue_set,
+            self.msaa_samples,
         )?;
 
         Ok(())

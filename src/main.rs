@@ -56,4 +56,4 @@ fn main() -> Result<()> {
     });
 }
 
-// https://kylemayes.github.io/vulkanalia/model/loading_models.html
+// https://kylemayes.github.io/vulkanalia/dynamic/push_constants.html

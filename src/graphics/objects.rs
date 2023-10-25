@@ -10,6 +10,8 @@ use vulkanalia::vk::KhrSwapchainExtension;
 
 use winit::window::Window;
 
+use super::types::Vertex;
+
 pub struct Swapchain {
     pub swapchain: vk::SwapchainKHR,
     pub images: Vec<vk::Image>,
@@ -67,6 +69,7 @@ impl Pipeline {
         logical_device: &Device,
         physical_device: vk::PhysicalDevice,
         swapchain: &Swapchain,
+        msaa_samples: vk::SampleCountFlags,
     ) -> Result<Self> {
         let descriptor_set_layout = g_utils::create_descriptor_set_layout(logical_device)?;
 
@@ -79,6 +82,7 @@ impl Pipeline {
             physical_device,
             swapchain,
             descriptor_set_layout,
+            msaa_samples,
         )?;
 
         Ok(Self {
@@ -105,6 +109,9 @@ pub struct Presenter {
     depth_image: vk::Image,
     depth_image_memory: vk::DeviceMemory,
     depth_image_view: vk::ImageView,
+    color_image: vk::Image,
+    color_image_memory: vk::DeviceMemory,
+    color_image_view: vk::ImageView,
     framebuffers: Vec<vk::Framebuffer>,
     pub command_buffers: Vec<vk::CommandBuffer>,
     pub image_available_semaphores: Vec<vk::Semaphore>,
@@ -124,6 +131,7 @@ impl Presenter {
         instance: &Instance,
         physical_device: vk::PhysicalDevice,
         queue_set: &g_utils::QueueSet,
+        msaa_samples: vk::SampleCountFlags,
     ) -> Result<Self> {
         let descriptor_sets = g_utils::create_descriptor_sets(
             logical_device,
@@ -141,6 +149,15 @@ impl Presenter {
             swapchain.extent,
             &command_pool_set,
             queue_set,
+            msaa_samples,
+        )?;
+
+        let (color_image, color_image_memory, color_image_view) = g_utils::create_color_objects(
+            instance,
+            logical_device,
+            physical_device,
+            swapchain,
+            msaa_samples,
         )?;
 
         let framebuffers = g_utils::create_framebuffers(
@@ -148,6 +165,7 @@ impl Presenter {
             pipeline.render_pass,
             swapchain,
             depth_image_view,
+            color_image_view,
         )?;
 
         buffer_memory_allocator.create_buffers(logical_device)?;
@@ -160,13 +178,12 @@ impl Presenter {
             command_pool_set,
         )?;
 
-        texture_engine.allocate(
+        texture_engine.allocate_memory(
             instance,
             logical_device,
             physical_device,
             queue_set,
             &command_pool_set,
-            queue_family_indices,
         )?;
 
         g_utils::update_descriptor_sets(
@@ -202,6 +219,9 @@ impl Presenter {
             depth_image,
             depth_image_memory,
             depth_image_view,
+            color_image,
+            color_image_memory,
+            color_image_view,
             command_buffers,
             image_available_semaphores,
             render_finished_semaphores,
@@ -225,8 +245,11 @@ impl Presenter {
             .iter()
             .for_each(|framebuffer| logical_device.destroy_framebuffer(*framebuffer, None));
         logical_device.destroy_image_view(self.depth_image_view, None);
-        logical_device.free_memory(self.depth_image_memory, None);
         logical_device.destroy_image(self.depth_image, None);
+        logical_device.free_memory(self.depth_image_memory, None);
+        logical_device.destroy_image_view(self.color_image_view, None);
+        logical_device.destroy_image(self.color_image, None);
+        logical_device.free_memory(self.color_image_memory, None);
     }
 }
 
@@ -240,7 +263,7 @@ pub struct VertexBuffer {
 }
 
 impl VertexBuffer {
-    pub unsafe fn create(_logical_device: &Device, vertices: &[g_types::Vertex]) -> Result<Self> {
+    pub unsafe fn create(vertices: &[g_types::Vertex]) -> Result<Self> {
         let size = std::mem::size_of_val(vertices) as u64;
 
         Ok(Self {
@@ -336,7 +359,7 @@ pub struct IndexBuffer {
 }
 
 impl IndexBuffer {
-    pub unsafe fn create(_logical_device: &Device, indices: &[u32]) -> Result<Self> {
+    pub unsafe fn create(indices: &[u32]) -> Result<Self> {
         let size = std::mem::size_of_val(indices) as u64;
 
         Ok(Self {
@@ -746,14 +769,13 @@ impl TextureMemoryAllocator {
         self.textures.push(texture);
     }
 
-    pub unsafe fn allocate(
+    pub unsafe fn allocate_memory(
         &mut self,
         instance: &Instance,
         logical_device: &Device,
         physical_device: vk::PhysicalDevice,
         queue_set: &g_utils::QueueSet,
         command_pool_set: &g_types::CommandPoolSet,
-        queue_family_indices: &g_utils::QueueFamilyIndices,
     ) -> Result<()> {
         for texture in self.textures.iter_mut() {
             texture.allocate(
@@ -762,7 +784,6 @@ impl TextureMemoryAllocator {
                 physical_device,
                 command_pool_set,
                 queue_set,
-                queue_family_indices,
             )?;
         }
         Ok(())
@@ -802,13 +823,12 @@ impl Texture {
         physical_device: vk::PhysicalDevice,
         command_pool_set: &g_types::CommandPoolSet,
         queue_set: &g_utils::QueueSet,
-        queue_family_indices: &g_utils::QueueFamilyIndices,
     ) -> Result<()> {
         if !self.image.is_null() {
             return Ok(());
         }
 
-        let (image, image_memory) = g_utils::create_texture_image(
+        let (image, image_memory, mip_levels) = g_utils::create_texture_image(
             instance,
             logical_device,
             physical_device,
@@ -816,9 +836,9 @@ impl Texture {
             queue_set,
         )?;
 
-        let image_view = g_utils::create_texture_image_view(logical_device, image)?;
+        let image_view = g_utils::create_texture_image_view(logical_device, image, mip_levels)?;
 
-        let sampler = g_utils::create_texture_sampler(logical_device)?;
+        let sampler = g_utils::create_texture_sampler(logical_device, mip_levels)?;
 
         self.image = image;
         self.image_memory = image_memory;
@@ -837,8 +857,21 @@ impl Texture {
 }
 
 pub struct Model {
-    vertices: Vec<g_types::Vertex>,
-    indices: Vec<u32>,
     pub vertex_buffer: VertexBuffer,
     pub index_buffer: IndexBuffer,
+}
+
+impl Model {
+    pub unsafe fn create() -> Result<Self> {
+        let (vertices, indices) = g_utils::load_model()?;
+
+        let vertex_buffer = VertexBuffer::create(&vertices)?;
+
+        let index_buffer = IndexBuffer::create(&indices)?;
+
+        Ok(Self {
+            vertex_buffer,
+            index_buffer,
+        })
+    }
 }

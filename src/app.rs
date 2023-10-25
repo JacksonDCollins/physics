@@ -26,7 +26,7 @@ impl App {
         let entry = Entry::new(loader).map_err(|e| anyhow!("{}", e))?;
         let (instance, dbg_messenger) = graphics::utils::create_instance(window, &entry)?;
         let surface = vulkanalia::window::create_surface(&instance, &window, &window)?;
-        let (physical_device, queue_family_indices, swapchain_support) =
+        let (physical_device, queue_family_indices, swapchain_support, msaa_samples) =
             graphics::utils::pick_physical_device(&instance, surface)?;
 
         let (logical_device, queue_set) = graphics::utils::create_logical_device(
@@ -45,6 +45,7 @@ impl App {
             queue_set,
             queue_family_indices,
             swapchain_support,
+            msaa_samples,
         )?;
 
         Ok(Self {

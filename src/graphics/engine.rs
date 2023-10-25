@@ -19,6 +19,7 @@ pub struct RenderEngine {
     presenter: g_objects::Presenter,
 
     buffer_memory_allocator: g_objects::BufferMemoryAllocator,
+    texture_engine: g_objects::TextureMemoryAllocator,
     queue_family_indices: g_utils::QueueFamilyIndices,
     swapchain_support: g_utils::SwapchainSupport,
 
@@ -44,7 +45,8 @@ impl RenderEngine {
             &swapchain_support,
         )?;
 
-        let pipeline = g_objects::Pipeline::create(logical_device, &swapchain)?;
+        let pipeline =
+            g_objects::Pipeline::create(instance, logical_device, physical_device, &swapchain)?;
 
         let mut buffer_memory_allocator = g_objects::BufferMemoryAllocator::create()?;
 
@@ -66,12 +68,19 @@ impl RenderEngine {
             buffer_memory_allocator.add_uniform_buffer(uniform_buffer);
         }
 
+        let mut texture_engine = g_objects::TextureMemoryAllocator::create()?;
+
+        let texture = g_objects::Texture::create();
+
+        texture_engine.add_texture(texture);
+
         let presenter = g_objects::Presenter::create(
             logical_device,
             &swapchain,
             &pipeline,
             &queue_family_indices,
             &mut buffer_memory_allocator,
+            &mut texture_engine,
             instance,
             physical_device,
             &queue_set,
@@ -85,6 +94,7 @@ impl RenderEngine {
             presenter,
 
             buffer_memory_allocator,
+            texture_engine,
             queue_family_indices,
             swapchain_support,
 
@@ -116,7 +126,12 @@ impl RenderEngine {
             &self.swapchain_support,
         )?;
 
-        self.pipeline = g_objects::Pipeline::create(logical_device, &self.swapchain)?;
+        self.pipeline = g_objects::Pipeline::create(
+            instance,
+            logical_device,
+            physical_device,
+            &self.swapchain,
+        )?;
 
         self.presenter = g_objects::Presenter::create(
             logical_device,
@@ -124,6 +139,7 @@ impl RenderEngine {
             &self.pipeline,
             &self.queue_family_indices,
             &mut self.buffer_memory_allocator,
+            &mut self.texture_engine,
             instance,
             physical_device,
             &self.queue_set,
@@ -236,14 +252,22 @@ impl RenderEngine {
             g_types::vec3(0.0, 0.0, 1.0),
         );
 
-        let mut proj = cgmath::perspective(
-            g_types::Deg(45.0),
-            self.swapchain.extent.width as f32 / self.swapchain.extent.height as f32,
-            0.1,
-            10.0,
+        #[rustfmt::skip]
+        let correction = g_types::Mat4::new(
+            1.0,  0.0,       0.0, 0.0,
+            // We're also flipping the Y-axis with this line's `-1.0`.
+            0.0, -1.0,       0.0, 0.0,
+            0.0,  0.0, 1.0 / 2.0, 0.0,
+            0.0,  0.0, 1.0 / 2.0, 1.0,
         );
 
-        proj[1][1] *= -1.0;
+        let proj = correction
+            * cgmath::perspective(
+                g_types::Deg(45.0),
+                self.swapchain.extent.width as f32 / self.swapchain.extent.height as f32,
+                0.1,
+                10.0,
+            );
 
         let ubo = g_types::UniformBufferObject { model, view, proj };
 
@@ -255,6 +279,7 @@ impl RenderEngine {
 
     pub unsafe fn destroy(&mut self, logical_device: &Device, instance: &Instance) {
         self.buffer_memory_allocator.destroy(logical_device);
+        self.texture_engine.destroy(logical_device);
         self.presenter.destroy(logical_device);
         self.pipeline.destroy(logical_device);
         self.swapchain.destroy(logical_device);

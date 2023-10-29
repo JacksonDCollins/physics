@@ -138,7 +138,7 @@ pub struct UniformBufferObject {
 impl Default for UniformBufferObject {
     fn default() -> Self {
         Self {
-            model: Mat4::identity(),
+            // model: Mat4::identity(),
             view: Mat4::identity(),
             proj: Mat4::identity(),
         }

@@ -1018,6 +1018,20 @@ pub unsafe fn create_buffer_and_memory(
     Ok((buffer, buffer_memory, requirements))
 }
 
+pub unsafe fn create_memory_with_mem_type_index(
+    device: &Device,
+    size: vk::DeviceSize,
+    memory_type_index: u32,
+) -> Result<vk::DeviceMemory> {
+    let memory_info = vk::MemoryAllocateInfo::builder()
+        .allocation_size(size)
+        .memory_type_index(memory_type_index);
+
+    let buffer_memory = device.allocate_memory(&memory_info, None)?;
+
+    Ok(buffer_memory)
+}
+
 pub unsafe fn copy_buffer(
     logical_device: &Device,
     queue: vk::Queue,
@@ -1064,6 +1078,8 @@ pub unsafe fn get_memory_info(
 
 pub unsafe fn create_descriptor_set_layout(
     logical_device: &Device,
+    texture_count: u32,
+    sampler_count: u32,
 ) -> Result<vk::DescriptorSetLayout> {
     let ubo_binding = vk::DescriptorSetLayoutBinding::builder()
         .binding(0)
@@ -1073,11 +1089,17 @@ pub unsafe fn create_descriptor_set_layout(
 
     let sampler_binding = vk::DescriptorSetLayoutBinding::builder()
         .binding(1)
-        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-        .descriptor_count(1)
+        .descriptor_type(vk::DescriptorType::SAMPLER)
+        .descriptor_count(sampler_count)
         .stage_flags(vk::ShaderStageFlags::FRAGMENT);
 
-    let bindings = &[ubo_binding, sampler_binding];
+    let texture_bindings = vk::DescriptorSetLayoutBinding::builder()
+        .binding(2)
+        .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+        .descriptor_count(texture_count)
+        .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+
+    let bindings = &[ubo_binding, sampler_binding, texture_bindings];
     let info = vk::DescriptorSetLayoutCreateInfo::builder().bindings(bindings);
 
     logical_device
@@ -1092,6 +1114,8 @@ pub fn align_up(value: u64, alignment: u64) -> u64 {
 pub unsafe fn create_descriptor_pool(
     logical_device: &Device,
     swapchain_images_count: u32,
+    texture_count: u32,
+    sampler_count: u32,
 ) -> Result<vk::DescriptorPool> {
     let ubo_size = vk::DescriptorPoolSize::builder()
         .type_(vk::DescriptorType::UNIFORM_BUFFER)
@@ -1099,9 +1123,13 @@ pub unsafe fn create_descriptor_pool(
 
     let sampler_size = vk::DescriptorPoolSize::builder()
         .type_(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-        .descriptor_count(swapchain_images_count);
+        .descriptor_count(swapchain_images_count * sampler_count);
 
-    let pool_sizes = &[ubo_size, sampler_size];
+    let texture_size = vk::DescriptorPoolSize::builder()
+        .type_(vk::DescriptorType::SAMPLED_IMAGE)
+        .descriptor_count(swapchain_images_count * texture_count);
+
+    let pool_sizes = &[ubo_size, sampler_size, texture_size];
     let info = vk::DescriptorPoolCreateInfo::builder()
         .pool_sizes(pool_sizes)
         .max_sets(swapchain_images_count);
@@ -1137,19 +1165,22 @@ pub unsafe fn update_descriptor_sets(
     texture_engine: &g_objects::TextureMemoryAllocator,
 ) {
     for i in 0..swapchain_images_count {
-        let info = vk::DescriptorBufferInfo::builder()
+        let buffer_info = vk::DescriptorBufferInfo::builder()
             .buffer(uniform_buffers[i].get_buffer())
             .offset(0)
             .range(uniform_buffers[i].get_size());
-        let buffer_info = &[info];
+        let buffer_info = &[buffer_info];
 
-        // let info = vk::DescriptorImageInfo::builder()
-        //     .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-        //     // .image_view(texture_image_view)
-        //     // .sampler(texture_sampler);
-        //     .image_view(texture_engine.textures[0].image_view)
-        //     .sampler(texture_engine.textures[0].sampler);
-        // let image_info = &[info];
+        let sampler_info = &texture_engine
+            .samplers
+            .values()
+            .map(|sampler| {
+                vk::DescriptorImageInfo::builder()
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .sampler(*sampler)
+                    .build()
+            })
+            .collect::<Vec<_>>();
 
         let image_info = &texture_engine
             .textures
@@ -1158,17 +1189,9 @@ pub unsafe fn update_descriptor_sets(
                 vk::DescriptorImageInfo::builder()
                     .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                     .image_view(texture.image_view)
-                    .sampler(texture.sampler)
                     .build()
             })
             .collect::<Vec<_>>();
-
-        let sampler_write = vk::WriteDescriptorSet::builder()
-            .dst_set(descriptor_sets[i])
-            .dst_binding(1)
-            .dst_array_element(0)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .image_info(image_info);
 
         let ubo_write = vk::WriteDescriptorSet::builder()
             .dst_set(descriptor_sets[i])
@@ -1177,8 +1200,24 @@ pub unsafe fn update_descriptor_sets(
             .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
             .buffer_info(buffer_info);
 
-        logical_device
-            .update_descriptor_sets(&[ubo_write, sampler_write], &[] as &[vk::CopyDescriptorSet]);
+        let sampler_info_write = vk::WriteDescriptorSet::builder()
+            .dst_set(descriptor_sets[i])
+            .dst_binding(1)
+            .dst_array_element(0)
+            .descriptor_type(vk::DescriptorType::SAMPLER)
+            .image_info(sampler_info);
+
+        let image_info_write = vk::WriteDescriptorSet::builder()
+            .dst_set(descriptor_sets[i])
+            .dst_binding(2)
+            .dst_array_element(0)
+            .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+            .image_info(image_info);
+
+        logical_device.update_descriptor_sets(
+            &[ubo_write, sampler_info_write, image_info_write],
+            &[] as &[vk::CopyDescriptorSet],
+        );
     }
 }
 
@@ -1255,6 +1294,7 @@ pub unsafe fn create_texture_image(
         texture_image,
         width,
         height,
+        0,
     )?;
 
     // transition_image_layout(
@@ -1302,7 +1342,7 @@ pub unsafe fn create_texture_image(
     Ok((texture_image, texture_image_memory, mip_levels))
 }
 
-unsafe fn create_image(
+pub unsafe fn create_image(
     instance: &Instance,
     logical_device: &Device,
     physical_device: vk::PhysicalDevice,
@@ -1389,7 +1429,7 @@ unsafe fn end_single_time_commands(
     Ok(())
 }
 
-unsafe fn transition_image_layout(
+pub unsafe fn transition_image_layout(
     logical_device: &Device,
     command_pool: vk::CommandPool,
     queue: vk::Queue,
@@ -1468,7 +1508,7 @@ unsafe fn transition_image_layout(
     end_single_time_commands(logical_device, command_pool, queue, command_buffer)
 }
 
-unsafe fn copy_buffer_to_image(
+pub unsafe fn copy_buffer_to_image(
     logical_device: &Device,
     command_pool: vk::CommandPool,
     queue: vk::Queue,
@@ -1476,6 +1516,7 @@ unsafe fn copy_buffer_to_image(
     image: vk::Image,
     width: u32,
     height: u32,
+    offset: u64,
 ) -> Result<()> {
     let command_buffer = begin_single_time_commands(logical_device, command_pool)?;
 
@@ -1486,7 +1527,7 @@ unsafe fn copy_buffer_to_image(
         .layer_count(1);
 
     let region = vk::BufferImageCopy::builder()
-        .buffer_offset(0)
+        .buffer_offset(offset)
         .buffer_row_length(0)
         .buffer_image_height(0)
         .image_subresource(subresource)
@@ -1709,7 +1750,7 @@ pub fn load_model() -> Result<(Vec<g_types::Vertex>, Vec<u32>)> {
     Ok((vertices, indices))
 }
 
-unsafe fn generate_mipmaps(
+pub unsafe fn generate_mipmaps(
     instance: &Instance,
     logical_device: &Device,
     physical_device: vk::PhysicalDevice,

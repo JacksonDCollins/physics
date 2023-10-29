@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::fs::File;
 use std::os::raw::c_void;
 
 use crate::graphics::types as g_types;
@@ -70,11 +73,20 @@ impl Pipeline {
         physical_device: vk::PhysicalDevice,
         swapchain: &Swapchain,
         msaa_samples: vk::SampleCountFlags,
+        texture_engine: &TextureMemoryAllocator,
     ) -> Result<Self> {
-        let descriptor_set_layout = g_utils::create_descriptor_set_layout(logical_device)?;
+        let descriptor_set_layout = g_utils::create_descriptor_set_layout(
+            logical_device,
+            texture_engine.textures.len() as u32,
+            texture_engine.samplers.len() as u32,
+        )?;
 
-        let descriptor_pool =
-            g_utils::create_descriptor_pool(logical_device, swapchain.images.len() as u32)?;
+        let descriptor_pool = g_utils::create_descriptor_pool(
+            logical_device,
+            swapchain.images.len() as u32,
+            texture_engine.textures.len() as u32,
+            texture_engine.samplers.len() as u32,
+        )?;
 
         let (pipeline_layout, render_pass, pipeline) = g_utils::create_pipeline_and_renderpass(
             instance,
@@ -177,6 +189,8 @@ impl Presenter {
             queue_set,
             command_pool_set,
         )?;
+
+        texture_engine.create_textures(instance, logical_device, physical_device)?;
 
         texture_engine.allocate_memory(
             instance,
@@ -561,8 +575,6 @@ impl BufferMemoryAllocator {
         if !self.changed {
             return Ok(());
         }
-        // self.destroy_buffers(logical_device);
-        // self.create_buffers(logical_device)?;
         self.reset_changes();
         self.changed = false;
 
@@ -598,7 +610,7 @@ impl BufferMemoryAllocator {
                 instance,
                 logical_device,
                 physical_device,
-                size * 4,
+                size * 2,
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
                 vk::MemoryPropertyFlags::DEVICE_LOCAL | vk::MemoryPropertyFlags::HOST_VISIBLE,
             )?;
@@ -754,19 +766,95 @@ impl BufferMemoryAllocator {
 
 pub struct TextureMemoryAllocator {
     pub textures: Vec<Texture>,
-    // texture_image_views: <vk::ImageView>,
-    // texture_sampler: vk::Sampler,
+    pub staging_buffer: vk::Buffer,
+    pub staging_memory: vk::DeviceMemory,
+    pub staging_memory_ptr: *mut c_void,
+    pub texture_memorys: HashMap<u32, vk::DeviceMemory>,
+    pub samplers: HashMap<u32, vk::Sampler>,
+    changed: bool,
 }
 
 impl TextureMemoryAllocator {
     pub unsafe fn create() -> Result<Self> {
         Ok(Self {
             textures: Vec::new(),
+            staging_buffer: vk::Buffer::null(),
+            staging_memory: vk::DeviceMemory::null(),
+            staging_memory_ptr: std::ptr::null_mut(),
+            texture_memorys: HashMap::new(), //vk::DeviceMemory::null(),
+            samplers: HashMap::new(),        //vk::Sampler::null(),
+            changed: false,
         })
     }
 
     pub unsafe fn add_texture(&mut self, texture: Texture) {
         self.textures.push(texture);
+        self.changed = true;
+    }
+
+    unsafe fn create_and_map_staging_buffer_and_memory(
+        instance: &Instance,
+        logical_device: &Device,
+        physical_device: vk::PhysicalDevice,
+        size: u64,
+    ) -> Result<(vk::Buffer, vk::DeviceMemory, *mut c_void)> {
+        let (staging_buffer, staging_memory, _) = g_utils::create_buffer_and_memory(
+            instance,
+            logical_device,
+            physical_device,
+            size,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
+        )?;
+
+        let memory =
+            logical_device.map_memory(staging_memory, 0, size, vk::MemoryMapFlags::empty())?;
+
+        Ok((staging_buffer, staging_memory, memory))
+    }
+
+    pub unsafe fn create_textures(
+        &mut self,
+        instance: &Instance,
+        logical_device: &Device,
+        physical_device: vk::PhysicalDevice,
+    ) -> Result<()> {
+        log::info!("Creating textures");
+        for texture in self.textures.iter_mut() {
+            texture.create_image_objects(instance, logical_device, physical_device)?;
+        }
+
+        Ok(())
+    }
+
+    fn check_for_changes(&mut self) {
+        for texture in self.textures.iter() {
+            if texture.changed {
+                self.changed = true;
+                return;
+            }
+        }
+    }
+
+    fn reset_changes(&mut self) {
+        for texture in self.textures.iter_mut() {
+            texture.changed = false;
+        }
+    }
+
+    pub unsafe fn prepare_samplers(&mut self, logical_device: &Device) -> Result<()> {
+        let all_mip_levels = self
+            .textures
+            .iter()
+            .map(|texture| texture.mip_levels)
+            .collect::<HashSet<_>>();
+
+        for mip_levels in all_mip_levels {
+            let sampler = g_utils::create_texture_sampler(logical_device, mip_levels)?;
+            self.samplers.insert(mip_levels, sampler);
+        }
+
+        Ok(())
     }
 
     pub unsafe fn allocate_memory(
@@ -777,82 +865,235 @@ impl TextureMemoryAllocator {
         queue_set: &g_utils::QueueSet,
         command_pool_set: &g_types::CommandPoolSet,
     ) -> Result<()> {
-        for texture in self.textures.iter_mut() {
-            texture.allocate(
-                instance,
+        self.check_for_changes();
+        if !self.changed {
+            return Ok(());
+        }
+        self.reset_changes();
+        self.changed = false;
+
+        let memory_type_indexes = self
+            .textures
+            .iter()
+            .map(|texture| texture.memory_type_index)
+            .collect::<HashSet<_>>();
+
+        let total_size = self
+            .textures
+            .iter()
+            .fold(0, |acc, texture| acc + texture.reqs.unwrap().size);
+
+        if self.staging_memory_ptr.is_null() {
+            let (staging_buffer, staging_buffer_memory, memory_ptr) =
+                Self::create_and_map_staging_buffer_and_memory(
+                    instance,
+                    logical_device,
+                    physical_device,
+                    total_size,
+                )?;
+            self.staging_buffer = staging_buffer;
+            self.staging_memory = staging_buffer_memory;
+            self.staging_memory_ptr = memory_ptr;
+        }
+
+        for memory_type_index in memory_type_indexes {
+            let required_size = self
+                .textures
+                .iter()
+                .filter(|texture| texture.memory_type_index == memory_type_index)
+                .fold(0, |acc, texture| acc + texture.reqs.unwrap().size);
+
+            let mut offset = 0;
+            self.textures
+                .iter_mut()
+                .filter(|texture| texture.memory_type_index == memory_type_index)
+                .for_each(|texture| {
+                    log::info!("Copying texture for {:?}", texture.image);
+                    offset = g_utils::align_up(offset, texture.reqs.unwrap().alignment);
+                    let dst = self.staging_memory_ptr.add(offset as usize).cast();
+                    g_utils::memcpy(texture.pixels.as_ptr(), dst, texture.pixels.len());
+                    texture.offset = Some(offset);
+                    offset += texture.reqs.unwrap().size;
+                });
+
+            let texture_memory = g_utils::create_memory_with_mem_type_index(
                 logical_device,
-                physical_device,
-                command_pool_set,
-                queue_set,
+                required_size,
+                memory_type_index,
             )?;
+
+            self.texture_memorys
+                .insert(memory_type_index, texture_memory);
+
+            for texture in self.textures.iter_mut().filter(|texture| {
+                texture.memory_type_index == memory_type_index && texture.offset.is_some()
+            }) {
+                log::info!("Binding memory for {:?}", texture.image);
+
+                logical_device.bind_image_memory(
+                    texture.image,
+                    *self.texture_memorys.get(&memory_type_index).unwrap(),
+                    texture.offset.unwrap(),
+                )?;
+
+                g_utils::transition_image_layout(
+                    logical_device,
+                    command_pool_set.graphics,
+                    queue_set.graphics,
+                    texture.image,
+                    texture.mip_levels,
+                    vk::Format::R8G8B8A8_SRGB,
+                    vk::ImageLayout::UNDEFINED,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    vk::QUEUE_FAMILY_IGNORED,
+                    vk::QUEUE_FAMILY_IGNORED,
+                )?;
+
+                g_utils::copy_buffer_to_image(
+                    logical_device,
+                    command_pool_set.graphics,
+                    queue_set.graphics,
+                    self.staging_buffer,
+                    texture.image,
+                    texture.width,
+                    texture.height,
+                    texture.offset.unwrap(),
+                )?;
+
+                g_utils::generate_mipmaps(
+                    instance,
+                    logical_device,
+                    physical_device,
+                    command_pool_set.graphics,
+                    queue_set.graphics,
+                    texture.image,
+                    vk::Format::R8G8B8A8_SRGB,
+                    texture.width,
+                    texture.height,
+                    texture.mip_levels,
+                )?;
+
+                texture.image_view = g_utils::create_texture_image_view(
+                    logical_device,
+                    texture.image,
+                    texture.mip_levels,
+                )?;
+            }
         }
         Ok(())
     }
 
-    pub unsafe fn destroy(&self, logical_device: &Device) {
-        // logical_device.destroy_sampler(self.texture_sampler, None);
-        // logical_device.destroy_image_view(self.texture_image_view, None);
-        // logical_device.destroy_image(self.texture_image, None);
+    pub unsafe fn destroy(&mut self, logical_device: &Device) {
         self.textures.iter().for_each(|texture| {
+            log::info!("Destroying texture for {:?}", texture.image);
             texture.destroy(logical_device);
         });
+
+        for (_, sampler) in self.samplers.iter() {
+            logical_device.destroy_sampler(*sampler, None);
+        }
+
+        for (_, texture_memory) in self.texture_memorys.iter() {
+            logical_device.free_memory(*texture_memory, None);
+        }
+
+        logical_device.unmap_memory(self.staging_memory);
+        logical_device.destroy_buffer(self.staging_buffer, None);
+        self.staging_memory_ptr = std::ptr::null_mut();
+        logical_device.free_memory(self.staging_memory, None);
     }
 }
 
 pub struct Texture {
     pub image: vk::Image,
-    pub image_memory: vk::DeviceMemory,
+    pub pixels: Vec<u8>,
+    // pub image_memory: vk::DeviceMemory,
     pub image_view: vk::ImageView,
-    pub sampler: vk::Sampler,
+    pub pixels_size: u64,
+    pub reqs: Option<vk::MemoryRequirements>,
+    pub offset: Option<u64>,
+    pub mip_levels: u32,
+    pub width: u32,
+    pub height: u32,
+    pub memory_type_index: u32,
+    changed: bool,
 }
 
 impl Texture {
-    pub unsafe fn create() -> Self {
-        Self {
+    pub unsafe fn create(path: &str) -> Result<Self> {
+        let image = File::open(path)?;
+        let decoder = png::Decoder::new(image);
+        let mut reader = decoder.read_info()?;
+
+        let mut pixels = vec![0; reader.info().raw_bytes()];
+        reader.next_frame(&mut pixels)?;
+
+        let pixels_size = reader.info().raw_bytes() as u64;
+        let (width, height) = reader.info().size();
+
+        let mip_levels = (width.max(height) as f32).log2().floor() as u32 + 1;
+
+        Ok(Self {
             image: vk::Image::null(),
-            image_memory: vk::DeviceMemory::null(),
+            pixels,
             image_view: vk::ImageView::null(),
-            sampler: vk::Sampler::null(),
-        }
+            pixels_size,
+            reqs: None,
+            offset: None,
+            mip_levels,
+            width,
+            height,
+            memory_type_index: 0,
+            changed: false,
+        })
     }
 
-    pub unsafe fn allocate(
+    pub unsafe fn create_image_objects(
         &mut self,
         instance: &Instance,
         logical_device: &Device,
         physical_device: vk::PhysicalDevice,
-        command_pool_set: &g_types::CommandPoolSet,
-        queue_set: &g_utils::QueueSet,
     ) -> Result<()> {
-        if !self.image.is_null() {
-            return Ok(());
+        if self.image.is_null() {
+            let info = vk::ImageCreateInfo::builder()
+                .image_type(vk::ImageType::_2D)
+                .extent(vk::Extent3D {
+                    width: self.width,
+                    height: self.height,
+                    depth: 1,
+                })
+                .mip_levels(self.mip_levels)
+                .array_layers(1)
+                .format(vk::Format::R8G8B8A8_SRGB)
+                .tiling(vk::ImageTiling::OPTIMAL)
+                .initial_layout(vk::ImageLayout::UNDEFINED)
+                .usage(
+                    vk::ImageUsageFlags::SAMPLED
+                        | vk::ImageUsageFlags::TRANSFER_DST
+                        | vk::ImageUsageFlags::TRANSFER_SRC,
+                )
+                .samples(vk::SampleCountFlags::_1)
+                .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+            self.image = logical_device.create_image(&info, None)?;
+            let reqs = logical_device.get_image_memory_requirements(self.image);
+            self.reqs = Some(reqs);
+
+            self.memory_type_index = g_utils::get_memory_type_index(
+                instance,
+                physical_device,
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                reqs,
+            )?;
         }
-
-        let (image, image_memory, mip_levels) = g_utils::create_texture_image(
-            instance,
-            logical_device,
-            physical_device,
-            command_pool_set,
-            queue_set,
-        )?;
-
-        let image_view = g_utils::create_texture_image_view(logical_device, image, mip_levels)?;
-
-        let sampler = g_utils::create_texture_sampler(logical_device, mip_levels)?;
-
-        self.image = image;
-        self.image_memory = image_memory;
-        self.image_view = image_view;
-        self.sampler = sampler;
 
         Ok(())
     }
 
     pub unsafe fn destroy(&self, logical_device: &Device) {
-        logical_device.destroy_sampler(self.sampler, None);
         logical_device.destroy_image_view(self.image_view, None);
         logical_device.destroy_image(self.image, None);
-        logical_device.free_memory(self.image_memory, None);
+        // logical_device.free_memory(self.image_memory, None);
     }
 }
 

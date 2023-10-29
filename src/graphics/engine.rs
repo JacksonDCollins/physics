@@ -47,14 +47,6 @@ impl RenderEngine {
             &swapchain_support,
         )?;
 
-        let pipeline = g_objects::Pipeline::create(
-            instance,
-            logical_device,
-            physical_device,
-            &swapchain,
-            msaa_samples,
-        )?;
-
         let mut buffer_memory_allocator = g_objects::BufferMemoryAllocator::create()?;
 
         let model = g_objects::Model::create()?;
@@ -73,9 +65,23 @@ impl RenderEngine {
 
         let mut texture_engine = g_objects::TextureMemoryAllocator::create()?;
 
-        let texture = g_objects::Texture::create();
+        let texture = g_objects::Texture::create("resources/viking_room.png")?;
+
+        let texture2 = g_objects::Texture::create("resources/texture.png")?;
 
         texture_engine.add_texture(texture);
+        texture_engine.add_texture(texture2);
+
+        texture_engine.prepare_samplers(logical_device)?;
+
+        let pipeline = g_objects::Pipeline::create(
+            instance,
+            logical_device,
+            physical_device,
+            &swapchain,
+            msaa_samples,
+            &texture_engine,
+        )?;
 
         let presenter = g_objects::Presenter::create(
             logical_device,
@@ -137,6 +143,7 @@ impl RenderEngine {
             physical_device,
             &self.swapchain,
             self.msaa_samples,
+            &self.texture_engine,
         )?;
 
         self.presenter = g_objects::Presenter::create(

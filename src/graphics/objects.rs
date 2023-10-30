@@ -116,16 +116,18 @@ impl Pipeline {
 }
 
 pub struct Presenter {
-    descriptor_sets: Vec<vk::DescriptorSet>,
-    pub command_pool_set: g_types::CommandPoolSet,
+    pub descriptor_sets: Vec<vk::DescriptorSet>,
+    pub command_pool_sets: Vec<g_types::CommandPoolSet>,
+    pub master_command_pool_set: g_types::CommandPoolSet,
     depth_image: vk::Image,
     depth_image_memory: vk::DeviceMemory,
     depth_image_view: vk::ImageView,
     color_image: vk::Image,
     color_image_memory: vk::DeviceMemory,
     color_image_view: vk::ImageView,
-    framebuffers: Vec<vk::Framebuffer>,
+    pub framebuffers: Vec<vk::Framebuffer>,
     pub command_buffers: Vec<vk::CommandBuffer>,
+    pub secondary_command_buffers: Vec<Vec<vk::CommandBuffer>>,
     pub image_available_semaphores: Vec<vk::Semaphore>,
     pub render_finished_semaphores: Vec<vk::Semaphore>,
     pub in_flight_fences: Vec<vk::Fence>,
@@ -152,14 +154,21 @@ impl Presenter {
             swapchain.images.len(),
         )?;
 
-        let command_pool_set = g_utils::create_command_pools(logical_device, queue_family_indices)?;
+        let master_command_pool_set =
+            g_utils::create_command_pool_set(logical_device, queue_family_indices)?;
+
+        let command_pool_sets = g_utils::create_command_pool_sets(
+            logical_device,
+            swapchain.images.len() as u32,
+            queue_family_indices,
+        )?;
 
         let (depth_image, depth_image_memory, depth_image_view) = g_utils::create_depth_objects(
             instance,
             logical_device,
             physical_device,
             swapchain.extent,
-            &command_pool_set,
+            &master_command_pool_set,
             queue_set,
             msaa_samples,
         )?;
@@ -187,7 +196,7 @@ impl Presenter {
             logical_device,
             physical_device,
             queue_set,
-            command_pool_set,
+            master_command_pool_set,
         )?;
 
         texture_engine.create_textures(instance, logical_device, physical_device)?;
@@ -197,7 +206,7 @@ impl Presenter {
             logical_device,
             physical_device,
             queue_set,
-            &command_pool_set,
+            &master_command_pool_set,
         )?;
 
         g_utils::update_descriptor_sets(
@@ -211,13 +220,11 @@ impl Presenter {
 
         let command_buffers = g_utils::create_command_buffers(
             logical_device,
-            command_pool_set,
-            &framebuffers,
-            swapchain,
-            pipeline,
-            buffer_memory_allocator,
-            &descriptor_sets,
+            &command_pool_sets,
+            swapchain.images.len(),
         )?;
+
+        let secondary_command_buffers = vec![vec![]; swapchain.images.len()];
 
         let (
             image_available_semaphores,
@@ -229,7 +236,8 @@ impl Presenter {
         Ok(Self {
             descriptor_sets,
             framebuffers,
-            command_pool_set,
+            command_pool_sets,
+            master_command_pool_set,
             depth_image,
             depth_image_memory,
             depth_image_view,
@@ -237,6 +245,7 @@ impl Presenter {
             color_image_memory,
             color_image_view,
             command_buffers,
+            secondary_command_buffers,
             image_available_semaphores,
             render_finished_semaphores,
             in_flight_fences,
@@ -254,7 +263,10 @@ impl Presenter {
         self.render_finished_semaphores
             .iter()
             .for_each(|semaphore| logical_device.destroy_semaphore(*semaphore, None));
-        self.command_pool_set.destroy(logical_device);
+        self.command_pool_sets.iter().for_each(|pool_set| {
+            pool_set.destroy(logical_device);
+        });
+        self.master_command_pool_set.destroy(logical_device);
         self.framebuffers
             .iter()
             .for_each(|framebuffer| logical_device.destroy_framebuffer(*framebuffer, None));
@@ -438,8 +450,6 @@ pub struct BufferMemoryAllocator {
 
 impl BufferMemoryAllocator {
     pub unsafe fn create() -> Result<Self> {
-        log::info!("Creating buffer memory allocator");
-
         Ok(Self {
             vertex_index_memory: vk::DeviceMemory::null(),
             vertex_index_buffer: vk::Buffer::null(),
@@ -457,7 +467,6 @@ impl BufferMemoryAllocator {
     }
 
     pub unsafe fn get_vertex_buffers(&self) -> Vec<vk::Buffer> {
-        log::info!("Getting vertex buffers");
         self.vertex_buffers_to_allocate
             .iter()
             .map(|buffer| buffer.buffer)
@@ -465,7 +474,6 @@ impl BufferMemoryAllocator {
     }
 
     pub unsafe fn get_vertex_buffers_offsets(&self) -> Vec<u64> {
-        log::info!("Getting vertex buffer offsets");
         self.vertex_buffers_to_allocate
             .iter()
             .map(|_buffer| 0) //buffer.offset)
@@ -473,19 +481,16 @@ impl BufferMemoryAllocator {
     }
 
     pub unsafe fn add_vertex_buffer(&mut self, buffer: VertexBuffer) {
-        log::info!("Adding vertex buffer");
         self.vertex_buffers_to_allocate.push(buffer);
         self.changed = true;
     }
 
     pub unsafe fn set_index_buffer(&mut self, buffer: IndexBuffer) {
-        log::info!("Setting index buffer");
         self.index_buffer_to_allocate = buffer;
         self.changed = true;
     }
 
     pub unsafe fn add_uniform_buffer(&mut self, buffer: UniformBuffer) {
-        log::info!("Adding uniform buffer");
         self.uniform_buffers_to_allocate.push(buffer);
         self.changed = true;
     }
@@ -577,8 +582,6 @@ impl BufferMemoryAllocator {
         }
         self.reset_changes();
         self.changed = false;
-
-        log::info!("Allocating memory for buffers");
 
         let vertex_size = self
             .vertex_buffers_to_allocate
@@ -718,7 +721,6 @@ impl BufferMemoryAllocator {
     }
 
     pub unsafe fn destroy(&mut self, logical_device: &Device) {
-        log::info!("Destroying buffer memory allocator");
         self.destroy_buffers(logical_device);
 
         logical_device.destroy_buffer(self.vertex_index_buffer, None);
@@ -736,7 +738,6 @@ impl BufferMemoryAllocator {
     }
 
     pub unsafe fn destroy_buffers(&mut self, logical_device: &Device) {
-        log::info!("Destroying buffers");
         self.vertex_buffers_to_allocate
             .iter_mut()
             .filter(|buffer| !buffer.buffer.is_null())
@@ -751,7 +752,6 @@ impl BufferMemoryAllocator {
     }
 
     pub unsafe fn create_buffers(&mut self, logical_device: &Device) -> Result<()> {
-        log::info!("Creating buffers");
         for buffer in self.vertex_buffers_to_allocate.iter_mut() {
             buffer.create_buffer(logical_device)?;
         }
@@ -819,7 +819,6 @@ impl TextureMemoryAllocator {
         logical_device: &Device,
         physical_device: vk::PhysicalDevice,
     ) -> Result<()> {
-        log::info!("Creating textures");
         for texture in self.textures.iter_mut() {
             texture.create_image_objects(instance, logical_device, physical_device)?;
         }
@@ -908,7 +907,6 @@ impl TextureMemoryAllocator {
                 .iter_mut()
                 .filter(|texture| texture.memory_type_index == memory_type_index)
                 .for_each(|texture| {
-                    log::info!("Copying texture for {:?}", texture.image);
                     offset = g_utils::align_up(offset, texture.reqs.unwrap().alignment);
                     let dst = self.staging_memory_ptr.add(offset as usize).cast();
                     g_utils::memcpy(texture.pixels.as_ptr(), dst, texture.pixels.len());
@@ -928,8 +926,6 @@ impl TextureMemoryAllocator {
             for texture in self.textures.iter_mut().filter(|texture| {
                 texture.memory_type_index == memory_type_index && texture.offset.is_some()
             }) {
-                log::info!("Binding memory for {:?}", texture.image);
-
                 logical_device.bind_image_memory(
                     texture.image,
                     *self.texture_memorys.get(&memory_type_index).unwrap(),
@@ -985,7 +981,6 @@ impl TextureMemoryAllocator {
 
     pub unsafe fn destroy(&mut self, logical_device: &Device) {
         self.textures.iter().for_each(|texture| {
-            log::info!("Destroying texture for {:?}", texture.image);
             texture.destroy(logical_device);
         });
 

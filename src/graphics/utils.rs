@@ -5,6 +5,7 @@ use anyhow::{anyhow, Result};
 use std::collections::HashSet;
 use std::ffi::CStr;
 
+use std::mem::size_of;
 use std::os::raw::c_void;
 
 use std::collections::HashMap;
@@ -584,8 +585,21 @@ pub unsafe fn create_pipeline_and_renderpass(
         .attachments(attachments)
         .blend_constants([0.0, 0.0, 0.0, 0.0]);
 
+    let vert_push_constant_range = vk::PushConstantRange::builder()
+        .stage_flags(vk::ShaderStageFlags::VERTEX)
+        .offset(0)
+        .size(64 /* 16 × 4 byte floats */);
+
+    let frag_push_constant_range = vk::PushConstantRange::builder()
+        .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+        .offset(64)
+        .size(16 /* 2 x 4 byte ints */);
+
     let set_layouts = &[descriptor_set_layout];
-    let layout_info = vk::PipelineLayoutCreateInfo::builder().set_layouts(set_layouts);
+    let push_constant_ranges = &[vert_push_constant_range, frag_push_constant_range];
+    let layout_info = vk::PipelineLayoutCreateInfo::builder()
+        .set_layouts(set_layouts)
+        .push_constant_ranges(push_constant_ranges);
     let pipeline_layout = logical_device.create_pipeline_layout(&layout_info, None)?;
 
     let render_pass = create_render_pass(
@@ -752,143 +766,57 @@ pub unsafe fn create_framebuffers(
         .collect::<Result<Vec<_>, _>>()
 }
 
-pub unsafe fn create_command_pools(
+pub unsafe fn create_command_pool_set(
     logical_device: &Device,
     queue_family_indices: &QueueFamilyIndices,
 ) -> Result<g_types::CommandPoolSet> {
-    let present = {
-        let info = vk::CommandPoolCreateInfo::builder()
-            .queue_family_index(queue_family_indices.present)
-            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
-
-        logical_device.create_command_pool(&info, None)?
-    };
-    let graphics = {
-        let info = vk::CommandPoolCreateInfo::builder()
-            .queue_family_index(queue_family_indices.graphics)
-            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
-
-        logical_device.create_command_pool(&info, None)?
-    };
-    let transfer = {
-        let info = vk::CommandPoolCreateInfo::builder()
-            .queue_family_index(queue_family_indices.transfer)
-            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
-
-        logical_device.create_command_pool(&info, None)?
-    };
-    let compute = {
-        let info = vk::CommandPoolCreateInfo::builder()
-            .queue_family_index(queue_family_indices.compute)
-            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
-
-        logical_device.create_command_pool(&info, None)?
-    };
+    let present = create_command_pool(logical_device, queue_family_indices.present)?;
+    let graphics = create_command_pool(logical_device, queue_family_indices.graphics)?;
+    let transfer = create_command_pool(logical_device, queue_family_indices.transfer)?;
+    let compute = create_command_pool(logical_device, queue_family_indices.compute)?;
 
     Ok(g_types::CommandPoolSet::create(
         present, graphics, transfer, compute,
     ))
 }
 
+pub unsafe fn create_command_pool_sets(
+    logical_device: &Device,
+    swapchain_images_count: u32,
+    queue_family_indices: &QueueFamilyIndices,
+) -> Result<Vec<g_types::CommandPoolSet>> {
+    (0..swapchain_images_count)
+        .map(|_| create_command_pool_set(logical_device, queue_family_indices))
+        .collect::<Result<Vec<_>>>()
+}
+
+unsafe fn create_command_pool(
+    logical_device: &Device,
+    queue_family_index: u32,
+) -> Result<vk::CommandPool> {
+    let info = vk::CommandPoolCreateInfo::builder()
+        .flags(vk::CommandPoolCreateFlags::TRANSIENT)
+        .queue_family_index(queue_family_index);
+
+    Ok(logical_device.create_command_pool(&info, None)?)
+}
 pub unsafe fn create_command_buffers(
     device: &Device,
-    command_pool_set: g_types::CommandPoolSet,
-    framebuffers: &Vec<vk::Framebuffer>,
-    swapchain: &g_objects::Swapchain,
-    pipeline: &g_objects::Pipeline,
-    buffer_memory_allocator: &mut g_objects::BufferMemoryAllocator,
-    descriptor_sets: &Vec<vk::DescriptorSet>,
+    command_pool_sets: &[g_types::CommandPoolSet],
+    swapchain_images_count: usize,
 ) -> Result<Vec<vk::CommandBuffer>> {
-    let allocate_info = vk::CommandBufferAllocateInfo::builder()
-        .command_pool(command_pool_set.graphics)
-        .level(vk::CommandBufferLevel::PRIMARY)
-        .command_buffer_count(framebuffers.len() as u32);
+    (0..swapchain_images_count)
+        .map(|index| {
+            let allocate_info = vk::CommandBufferAllocateInfo::builder()
+                .command_pool(command_pool_sets[index].graphics)
+                .level(vk::CommandBufferLevel::PRIMARY)
+                .command_buffer_count(1);
 
-    let command_buffers = device.allocate_command_buffers(&allocate_info)?;
+            let command_buffer = device.allocate_command_buffers(&allocate_info)?[0];
 
-    for (i, command_buffer) in command_buffers.iter().enumerate() {
-        let inheritance = vk::CommandBufferInheritanceInfo::builder();
-
-        let info = vk::CommandBufferBeginInfo::builder()
-            .flags(vk::CommandBufferUsageFlags::empty()) // Optional.
-            .inheritance_info(&inheritance); // Optional.
-
-        device.begin_command_buffer(*command_buffer, &info)?;
-
-        let render_area = vk::Rect2D::builder()
-            .offset(vk::Offset2D::default())
-            .extent(swapchain.extent);
-
-        let color_clear_value = vk::ClearValue {
-            color: vk::ClearColorValue {
-                float32: [0.0, 0.0, 0.0, 1.0],
-            },
-        };
-
-        let depth_clear_value = vk::ClearValue {
-            depth_stencil: vk::ClearDepthStencilValue {
-                depth: 1.0,
-                stencil: 0,
-            },
-        };
-
-        let clear_values = &[color_clear_value, depth_clear_value];
-        let info = vk::RenderPassBeginInfo::builder()
-            .render_pass(pipeline.render_pass)
-            .framebuffer(framebuffers[i])
-            .render_area(render_area)
-            .clear_values(clear_values);
-
-        device.cmd_begin_render_pass(*command_buffer, &info, vk::SubpassContents::INLINE);
-
-        device.cmd_bind_pipeline(
-            *command_buffer,
-            vk::PipelineBindPoint::GRAPHICS,
-            pipeline.pipeline,
-        );
-
-        device.cmd_bind_vertex_buffers(
-            *command_buffer,
-            0,
-            &buffer_memory_allocator.get_vertex_buffers(), //&[buffer_memory_allocator.vertex_buffers_to_allocate[0].vertex_buffer],
-            &buffer_memory_allocator.get_vertex_buffers_offsets(), //&[buffer_memory_allocator.vertex_buffers_to_allocate[0].offset],
-        );
-
-        device.cmd_bind_index_buffer(
-            *command_buffer,
-            buffer_memory_allocator
-                .index_buffer_to_allocate
-                .get_buffer(),
-            0,
-            vk::IndexType::UINT32,
-        );
-
-        device.cmd_bind_descriptor_sets(
-            *command_buffer,
-            vk::PipelineBindPoint::GRAPHICS,
-            pipeline.pipeline_layout,
-            0,
-            &[descriptor_sets[i]],
-            &[],
-        );
-
-        device.cmd_draw_indexed(
-            *command_buffer,
-            buffer_memory_allocator
-                .index_buffer_to_allocate
-                .get_indice_count(),
-            1,
-            0,
-            0,
-            0,
-        );
-
-        device.cmd_end_render_pass(*command_buffer);
-
-        device.end_command_buffer(*command_buffer)?;
-    }
-
-    Ok(command_buffers)
+            Ok(command_buffer)
+        })
+        .collect::<Result<Vec<_>>>()
 }
 
 pub unsafe fn create_sync_objects(
@@ -1122,7 +1050,7 @@ pub unsafe fn create_descriptor_pool(
         .descriptor_count(swapchain_images_count);
 
     let sampler_size = vk::DescriptorPoolSize::builder()
-        .type_(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+        .type_(vk::DescriptorType::SAMPLER)
         .descriptor_count(swapchain_images_count * sampler_count);
 
     let texture_size = vk::DescriptorPoolSize::builder()

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs::File;
+use std::hash::Hash;
 use std::os::raw::c_void;
 
 use crate::graphics::types as g_types;
@@ -140,7 +141,7 @@ impl Presenter {
         swapchain: &Swapchain,
         pipeline: &Pipeline,
         queue_family_indices: &g_utils::QueueFamilyIndices,
-        buffer_memory_allocator: &mut BufferMemoryAllocator,
+        model_manager: &mut ModelManager,
         texture_engine: &mut TextureMemoryAllocator,
         instance: &Instance,
         physical_device: vk::PhysicalDevice,
@@ -189,9 +190,9 @@ impl Presenter {
             color_image_view,
         )?;
 
-        buffer_memory_allocator.create_buffers(logical_device)?;
+        model_manager.create_buffers(logical_device)?;
 
-        buffer_memory_allocator.allocate_memory(
+        model_manager.allocate_memory_for_buffers(
             instance,
             logical_device,
             physical_device,
@@ -212,7 +213,7 @@ impl Presenter {
         g_utils::update_descriptor_sets(
             logical_device,
             swapchain.images.len(),
-            &buffer_memory_allocator.uniform_buffers_to_allocate,
+            &model_manager.buffer_allocator.uniform_buffers_to_allocate,
             &descriptor_sets,
             texture_engine, //.texture_image_view,
                             // texture_engine, //.texture_sampler,
@@ -299,6 +300,10 @@ impl VertexBuffer {
             offset: None,
             changed: false,
         })
+    }
+
+    pub fn get_buffer(&self) -> vk::Buffer {
+        self.buffer
     }
 
     pub unsafe fn destroy(&mut self, logical_device: &Device) {
@@ -442,8 +447,8 @@ pub struct BufferMemoryAllocator {
     pub staging_memory: vk::DeviceMemory,
     pub staging_buffer: vk::Buffer,
     pub stage_memory_ptr: *mut c_void,
-    pub vertex_buffers_to_allocate: Vec<VertexBuffer>,
-    pub index_buffer_to_allocate: IndexBuffer,
+    // pub vertex_buffers_to_allocate: Vec<VertexBuffer>,
+    // pub index_buffer_to_allocate: IndexBuffer,
     pub uniform_buffers_to_allocate: Vec<UniformBuffer>,
     pub changed: bool,
 }
@@ -459,70 +464,70 @@ impl BufferMemoryAllocator {
             staging_buffer: vk::Buffer::null(),
             staging_memory: vk::DeviceMemory::null(),
             stage_memory_ptr: std::ptr::null_mut(),
-            vertex_buffers_to_allocate: Vec::new(),
-            index_buffer_to_allocate: IndexBuffer::null(),
+            // vertex_buffers_to_allocate: Vec::new(),
+            // index_buffer_to_allocate: IndexBuffer::null(),
             uniform_buffers_to_allocate: Vec::new(),
             changed: false,
         })
     }
 
-    pub unsafe fn get_vertex_buffers(&self) -> Vec<vk::Buffer> {
-        self.vertex_buffers_to_allocate
-            .iter()
-            .map(|buffer| buffer.buffer)
-            .collect::<Vec<_>>()
-    }
+    // pub unsafe fn get_vertex_buffers(&self) -> Vec<vk::Buffer> {
+    //     self.vertex_buffers_to_allocate
+    //         .iter()
+    //         .map(|buffer| buffer.buffer)
+    //         .collect::<Vec<_>>()
+    // }
 
-    pub unsafe fn get_vertex_buffers_offsets(&self) -> Vec<u64> {
-        self.vertex_buffers_to_allocate
-            .iter()
-            .map(|_buffer| 0) //buffer.offset)
-            .collect::<Vec<_>>()
-    }
+    // pub unsafe fn get_vertex_buffers_offsets(&self) -> Vec<u64> {
+    //     self.vertex_buffers_to_allocate
+    //         .iter()
+    //         .map(|_buffer| 0) //buffer.offset)
+    //         .collect::<Vec<_>>()
+    // }
 
-    pub unsafe fn add_vertex_buffer(&mut self, buffer: VertexBuffer) {
-        self.vertex_buffers_to_allocate.push(buffer);
-        self.changed = true;
-    }
+    // pub unsafe fn add_vertex_buffer(&mut self, buffer: VertexBuffer) {
+    //     self.vertex_buffers_to_allocate.push(buffer);
+    //     self.changed = true;
+    // }
 
-    pub unsafe fn set_index_buffer(&mut self, buffer: IndexBuffer) {
-        self.index_buffer_to_allocate = buffer;
-        self.changed = true;
-    }
+    // pub unsafe fn set_index_buffer(&mut self, buffer: IndexBuffer) {
+    //     self.index_buffer_to_allocate = buffer;
+    //     self.changed = true;
+    // }
 
     pub unsafe fn add_uniform_buffer(&mut self, buffer: UniformBuffer) {
         self.uniform_buffers_to_allocate.push(buffer);
         self.changed = true;
     }
 
-    unsafe fn check_for_changes(&mut self) {
-        for buffer in self.vertex_buffers_to_allocate.iter() {
-            if buffer.changed {
-                self.changed = true;
-                return;
-            }
-        }
-        if self.index_buffer_to_allocate.changed {
-            self.changed = true;
-            return;
-        }
-        for buffer in self.uniform_buffers_to_allocate.iter() {
-            if buffer.changed {
-                self.changed = true;
-                return;
-            }
-        }
-    }
+    // unsafe fn check_for_changes(&mut self) {
+    //     for buffer in self.vertex_buffers_to_allocate.iter() {
+    //         if buffer.changed {
+    //             self.changed = true;
+    //             return;
+    //         }
+    //     }
+    //     if self.index_buffer_to_allocate.changed {
+    //         self.changed = true;
+    //         return;
+    //     }
+    //     for buffer in self.uniform_buffers_to_allocate.iter() {
+    //         if buffer.changed {
+    //             self.changed = true;
+    //             return;
+    //         }
+    //     }
+    // }
 
-    unsafe fn reset_changes(&mut self) {
-        for buffer in self.vertex_buffers_to_allocate.iter_mut() {
-            buffer.changed = false;
-        }
-        self.index_buffer_to_allocate.changed = false;
-        for buffer in self.uniform_buffers_to_allocate.iter_mut() {
-            buffer.changed = false;
-        }
-    }
+    // unsafe fn reset_changes(&mut self) {
+    //     for buffer in self.vertex_buffers_to_allocate.iter_mut() {
+    //         buffer.changed = false;
+    //     }
+    //     self.index_buffer_to_allocate.changed = false;
+    //     for buffer in self.uniform_buffers_to_allocate.iter_mut() {
+    //         buffer.changed = false;
+    //     }
+    // }
 
     unsafe fn create_and_map_staging_buffer_and_memory(
         instance: &Instance,
@@ -575,21 +580,26 @@ impl BufferMemoryAllocator {
         physical_device: vk::PhysicalDevice,
         queue_set: &g_utils::QueueSet,
         command_pool_set: g_types::CommandPoolSet,
+        models: &mut HashMap<String, Model>,
     ) -> Result<()> {
-        self.check_for_changes();
+        // self.check_for_changes();
         if !self.changed {
             return Ok(());
         }
-        self.reset_changes();
+        // self.reset_changes();
         self.changed = false;
 
-        let vertex_size = self
-            .vertex_buffers_to_allocate
-            .iter()
+        let vertex_size = models
+            .values()
+            .map(|model| &model.vertex_buffer)
             .filter(|buffer| buffer.size.is_some())
             .fold(0, |acc, buffer| acc + buffer.size.unwrap());
 
-        let index_size = self.index_buffer_to_allocate.size.unwrap_or(0);
+        let index_size = models
+            .values()
+            .map(|model| &model.index_buffer)
+            .filter(|buffer| buffer.size.is_some())
+            .fold(0, |acc, buffer| acc + buffer.size.unwrap());
 
         let vertex_index_size = vertex_size + index_size;
 
@@ -630,8 +640,9 @@ impl BufferMemoryAllocator {
         }
 
         let mut offset = 0;
-        self.vertex_buffers_to_allocate
-            .iter_mut()
+        models
+            .values_mut()
+            .map(|model| &mut model.vertex_buffer)
             .filter(|buffer| buffer.size.is_some())
             .for_each(|buffer| {
                 let alignment = logical_device
@@ -644,19 +655,20 @@ impl BufferMemoryAllocator {
                 offset += buffer.size.unwrap();
             });
 
-        if self.index_buffer_to_allocate.size.is_some() {
-            let alignment = logical_device
-                .get_buffer_memory_requirements(self.index_buffer_to_allocate.buffer)
-                .alignment;
-            offset = g_utils::align_up(offset, alignment);
-            let dst = self.stage_memory_ptr.add(offset as usize).cast();
-            g_utils::memcpy(
-                self.index_buffer_to_allocate.indices.as_ptr(),
-                dst,
-                self.index_buffer_to_allocate.indices.len(),
-            );
-            self.index_buffer_to_allocate.offset = Some(offset);
-        }
+        models
+            .values_mut()
+            .map(|model| &mut model.index_buffer)
+            .filter(|buffer| buffer.size.is_some())
+            .for_each(|buffer: &mut IndexBuffer| {
+                let alignment = logical_device
+                    .get_buffer_memory_requirements(buffer.buffer)
+                    .alignment;
+                offset = g_utils::align_up(offset, alignment);
+                let dst = self.stage_memory_ptr.add(offset as usize).cast();
+                g_utils::memcpy(buffer.indices.as_ptr(), dst, buffer.indices.len());
+                buffer.offset = Some(offset);
+                offset += buffer.size.unwrap();
+            });
 
         (self.vertex_index_buffer, self.vertex_index_memory, _) =
             g_utils::create_buffer_and_memory(
@@ -681,9 +693,9 @@ impl BufferMemoryAllocator {
             0,
         )?;
 
-        for buffer in self
-            .vertex_buffers_to_allocate
-            .iter()
+        for buffer in models
+            .values()
+            .map(|model| &model.vertex_buffer)
             .filter(|buffer| buffer.offset.is_some())
         {
             logical_device.bind_buffer_memory(
@@ -693,11 +705,15 @@ impl BufferMemoryAllocator {
             )?;
         }
 
-        if self.index_buffer_to_allocate.offset.is_some() {
+        for buffer in models
+            .values()
+            .map(|model| &model.index_buffer)
+            .filter(|buffer| buffer.offset.is_some())
+        {
             logical_device.bind_buffer_memory(
-                self.index_buffer_to_allocate.buffer,
+                buffer.buffer,
                 self.vertex_index_memory,
-                self.index_buffer_to_allocate.offset.unwrap(),
+                buffer.offset.unwrap(),
             )?;
         }
 
@@ -738,25 +754,29 @@ impl BufferMemoryAllocator {
     }
 
     pub unsafe fn destroy_buffers(&mut self, logical_device: &Device) {
-        self.vertex_buffers_to_allocate
-            .iter_mut()
-            .filter(|buffer| !buffer.buffer.is_null())
-            .for_each(|buffer| buffer.destroy(logical_device));
-        if !self.index_buffer_to_allocate.buffer.is_null() {
-            self.index_buffer_to_allocate.destroy(logical_device);
-        }
+        // self.vertex_buffers_to_allocate
+        //     .iter_mut()
+        //     .filter(|buffer| !buffer.buffer.is_null())
+        //     .for_each(|buffer| buffer.destroy(logical_device));
+        // if !self.index_buffer_to_allocate.buffer.is_null() {
+        //     self.index_buffer_to_allocate.destroy(logical_device);
+        // }
         self.uniform_buffers_to_allocate
             .iter_mut()
             .filter(|buffer| !buffer.buffer.is_null())
             .for_each(|buffer| buffer.destroy(logical_device));
     }
 
-    pub unsafe fn create_buffers(&mut self, logical_device: &Device) -> Result<()> {
-        for buffer in self.vertex_buffers_to_allocate.iter_mut() {
-            buffer.create_buffer(logical_device)?;
+    pub unsafe fn create_buffers(
+        &mut self,
+        logical_device: &Device,
+        models: &mut HashMap<String, Model>,
+    ) -> Result<()> {
+        for model in models.values_mut() {
+            model.vertex_buffer.create_buffer(logical_device)?;
+            model.index_buffer.create_buffer(logical_device)?;
         }
-        self.index_buffer_to_allocate
-            .create_buffer(logical_device)?;
+
         for buffer in self.uniform_buffers_to_allocate.iter_mut() {
             buffer.create_buffer(logical_device)?;
         }
@@ -1098,8 +1118,8 @@ pub struct Model {
 }
 
 impl Model {
-    pub unsafe fn create() -> Result<Self> {
-        let (vertices, indices) = g_utils::load_model()?;
+    pub unsafe fn create(path: &str) -> Result<Self> {
+        let (vertices, indices) = g_utils::load_model(path)?;
 
         let vertex_buffer = VertexBuffer::create(&vertices)?;
 
@@ -1108,6 +1128,67 @@ impl Model {
         Ok(Self {
             vertex_buffer,
             index_buffer,
+            // uniform_buffers: Vec::new(),
         })
+    }
+
+    pub unsafe fn destroy(&mut self, logical_device: &Device) {
+        self.vertex_buffer.destroy(logical_device);
+        self.index_buffer.destroy(logical_device);
+    }
+}
+
+pub struct ModelManager {
+    pub models: HashMap<String, Model>,
+    pub buffer_allocator: BufferMemoryAllocator,
+}
+
+impl ModelManager {
+    pub unsafe fn create() -> Result<Self> {
+        let buffer_allocator = BufferMemoryAllocator::create()?;
+
+        Ok(Self {
+            models: HashMap::new(),
+            buffer_allocator,
+        })
+    }
+
+    pub unsafe fn create_buffers(&mut self, logical_device: &Device) -> Result<()> {
+        self.buffer_allocator
+            .create_buffers(logical_device, &mut self.models)?;
+
+        Ok(())
+    }
+
+    pub unsafe fn allocate_memory_for_buffers(
+        &mut self,
+        instance: &Instance,
+        logical_device: &Device,
+        physical_device: vk::PhysicalDevice,
+        queue_set: &g_utils::QueueSet,
+        command_pool_set: g_types::CommandPoolSet,
+    ) -> Result<()> {
+        self.buffer_allocator.allocate_memory(
+            instance,
+            logical_device,
+            physical_device,
+            queue_set,
+            command_pool_set,
+            &mut self.models,
+        )?;
+
+        Ok(())
+    }
+
+    pub unsafe fn add_model(&mut self, name: &str, model: Model) {
+        self.models.insert(name.to_string(), model);
+    }
+
+    pub unsafe fn destroy(&mut self, logical_device: &Device) {
+        self.models
+            .values_mut()
+            .for_each(|model| model.destroy(logical_device));
+
+        self.buffer_allocator.destroy(logical_device);
     }
 }

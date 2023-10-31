@@ -19,7 +19,7 @@ pub struct RenderEngine {
     pipeline: g_objects::Pipeline,
     presenter: g_objects::Presenter,
 
-    buffer_memory_allocator: g_objects::BufferMemoryAllocator,
+    model_manager: g_objects::ModelManager,
     texture_engine: g_objects::TextureMemoryAllocator,
     queue_family_indices: g_utils::QueueFamilyIndices,
     swapchain_support: g_utils::SwapchainSupport,
@@ -48,20 +48,32 @@ impl RenderEngine {
             &swapchain_support,
         )?;
 
-        let mut buffer_memory_allocator = g_objects::BufferMemoryAllocator::create()?;
+        // let mut buffer_memory_allocator = g_objects::BufferMemoryAllocator::create()?;
+        let mut model_manager = g_objects::ModelManager::create()?;
 
-        let model = g_objects::Model::create()?;
+        let sphere = g_objects::Model::create("resources/sphere.obj")?;
 
-        buffer_memory_allocator.add_vertex_buffer(model.vertex_buffer);
+        model_manager.add_model("sphere", sphere);
 
-        buffer_memory_allocator.set_index_buffer(model.index_buffer);
+        // buffer_memory_allocator.add_vertex_buffer(sphere.vertex_buffer);
+
+        // buffer_memory_allocator.set_index_buffer(sphere.index_buffer);
+
+        let room = g_objects::Model::create("resources/viking_room.obj")?;
+
+        model_manager.add_model("room", room);
+        // buffer_memory_allocator.add_vertex_buffer(room.vertex_buffer);
+
+        // buffer_memory_allocator.set_index_buffer(room.index_buffer);
 
         for _ in 0..swapchain.images.len() {
             let uniform_buffer = g_objects::UniformBuffer::create(
                 logical_device,
                 g_types::UniformBufferObject::default(),
             )?;
-            buffer_memory_allocator.add_uniform_buffer(uniform_buffer);
+            model_manager
+                .buffer_allocator
+                .add_uniform_buffer(uniform_buffer);
         }
 
         let mut texture_engine = g_objects::TextureMemoryAllocator::create()?;
@@ -89,7 +101,7 @@ impl RenderEngine {
             &swapchain,
             &pipeline,
             &queue_family_indices,
-            &mut buffer_memory_allocator,
+            &mut model_manager,
             &mut texture_engine,
             instance,
             physical_device,
@@ -104,7 +116,7 @@ impl RenderEngine {
             pipeline,
             presenter,
 
-            buffer_memory_allocator,
+            model_manager,
             texture_engine,
             queue_family_indices,
             swapchain_support,
@@ -152,7 +164,7 @@ impl RenderEngine {
             &self.swapchain,
             &self.pipeline,
             &self.queue_family_indices,
-            &mut self.buffer_memory_allocator,
+            &mut self.model_manager,
             &mut self.texture_engine,
             instance,
             physical_device,
@@ -287,7 +299,8 @@ impl RenderEngine {
 
         let ubo = g_types::UniformBufferObject { view, proj };
 
-        self.buffer_memory_allocator
+        self.model_manager
+            .buffer_allocator
             .update_uniform_buffer(ubo, image_index)?;
 
         Ok(())
@@ -339,7 +352,14 @@ impl RenderEngine {
         );
 
         let secondary_command_buffers = (0..4)
-            .map(|i| self.update_secondary_command_buffer(logical_device, image_index, i))
+            .map(|i| {
+                self.update_secondary_command_buffer(
+                    logical_device,
+                    image_index,
+                    i,
+                    if i % 3 == 0 { "sphere" } else { "room" },
+                )
+            })
             .collect::<Result<Vec<_>, _>>()?;
         logical_device.cmd_execute_commands(command_buffer, &secondary_command_buffers[..]);
 
@@ -354,6 +374,7 @@ impl RenderEngine {
         logical_device: &Device,
         image_index: usize,
         model_index: usize,
+        model_name: &str,
     ) -> Result<vk::CommandBuffer> {
         let command_buffers = &mut self.presenter.secondary_command_buffers[image_index];
         while model_index >= command_buffers.len() {
@@ -385,36 +406,10 @@ impl RenderEngine {
         let y = (((model_index % 2) as f32) * 2.5) - 1.25;
         let z = (((model_index / 2) as f32) * -2.0) + 1.0;
 
-        let model = g_types::Mat4::from_translation(g_types::vec3(0.0, y, z))
-            * g_types::Mat4::from_axis_angle(
-                g_types::vec3(0.0, 0.0, 1.0),
-                g_types::Deg(90.0) * time,
-            );
-        let model_bytes = std::slice::from_raw_parts(
-            &model as *const g_types::Mat4 as *const u8,
-            size_of::<g_types::Mat4>(),
-        );
-
         logical_device.cmd_bind_pipeline(
             command_buffer,
             vk::PipelineBindPoint::GRAPHICS,
             self.pipeline.pipeline,
-        );
-
-        logical_device.cmd_bind_vertex_buffers(
-            command_buffer,
-            0,
-            &self.buffer_memory_allocator.get_vertex_buffers(),
-            &self.buffer_memory_allocator.get_vertex_buffers_offsets(),
-        );
-
-        logical_device.cmd_bind_index_buffer(
-            command_buffer,
-            self.buffer_memory_allocator
-                .index_buffer_to_allocate
-                .get_buffer(),
-            0,
-            vk::IndexType::UINT32,
         );
 
         logical_device.cmd_bind_descriptor_sets(
@@ -424,6 +419,32 @@ impl RenderEngine {
             0,
             &[self.presenter.descriptor_sets[image_index]],
             &[],
+        );
+
+        // for (_name, model) in self.model_manager.models.iter() {
+        let model = self.model_manager.models.get(model_name).unwrap();
+        logical_device.cmd_bind_vertex_buffers(
+            command_buffer,
+            0,
+            &[model.vertex_buffer.get_buffer()],
+            &[0],
+        );
+
+        logical_device.cmd_bind_index_buffer(
+            command_buffer,
+            model.index_buffer.get_buffer(),
+            0,
+            vk::IndexType::UINT32,
+        );
+
+        let model_mat = g_types::Mat4::from_translation(g_types::vec3(0.0, y, z))
+            * g_types::Mat4::from_axis_angle(
+                g_types::vec3(0.0, 0.0, 1.0),
+                g_types::Deg(90.0) * time,
+            );
+        let model_bytes = std::slice::from_raw_parts(
+            &model_mat as *const g_types::Mat4 as *const u8,
+            size_of::<g_types::Mat4>(),
         );
 
         logical_device.cmd_push_constants(
@@ -448,14 +469,13 @@ impl RenderEngine {
 
         logical_device.cmd_draw_indexed(
             command_buffer,
-            self.buffer_memory_allocator
-                .index_buffer_to_allocate
-                .get_indice_count(),
+            model.index_buffer.get_indice_count(),
             1,
             0,
             0,
             0,
         );
+        // }
 
         logical_device.end_command_buffer(command_buffer)?;
 
@@ -463,7 +483,7 @@ impl RenderEngine {
     }
 
     pub unsafe fn destroy(&mut self, logical_device: &Device, instance: &Instance) {
-        self.buffer_memory_allocator.destroy(logical_device);
+        self.model_manager.destroy(logical_device);
         self.texture_engine.destroy(logical_device);
         self.presenter.destroy(logical_device);
         self.pipeline.destroy(logical_device);

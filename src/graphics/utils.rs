@@ -1630,8 +1630,8 @@ unsafe fn get_depth_format(
     )
 }
 
-pub fn load_model() -> Result<(Vec<g_types::Vertex>, Vec<u32>)> {
-    let mut reader = BufReader::new(File::open("resources/viking_room.obj")?);
+pub fn load_model(path: &str) -> Result<(Vec<g_types::Vertex>, Vec<u32>)> {
+    let mut reader = BufReader::new(File::open(path)?);
 
     let (models, _) = tobj::load_obj_buf(
         &mut reader,

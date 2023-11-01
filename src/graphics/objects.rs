@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs::File;
 use std::hash::Hash;
+use std::mem::size_of;
 use std::os::raw::c_void;
 
 use crate::graphics::types as g_types;
@@ -1115,6 +1116,7 @@ impl Texture {
 pub struct Model {
     pub vertex_buffer: VertexBuffer,
     pub index_buffer: IndexBuffer,
+    pub position: g_types::Vec3,
 }
 
 impl Model {
@@ -1128,8 +1130,209 @@ impl Model {
         Ok(Self {
             vertex_buffer,
             index_buffer,
-            // uniform_buffers: Vec::new(),
+            position: g_types::Vec3::new(0.0, 0.0, 0.0),
         })
+    }
+
+    pub fn set_position(&mut self, position: g_types::Vec3) {
+        self.position = position;
+    }
+
+    pub unsafe fn push_constants(
+        &mut self,
+        logical_device: &Device,
+        command_buffer: vk::CommandBuffer,
+        pipeline: &Pipeline,
+        start: std::time::Instant,
+        model_index: usize,
+    ) {
+        let time = start.elapsed().as_secs_f32();
+
+        let y = (((model_index % 2) as f32) * 2.5) - 1.25;
+        let z = (((model_index / 2) as f32) * -2.0) + 1.0;
+
+        self.set_position(g_types::vec3(0.0, y, z));
+
+        let model_mat = g_types::Mat4::from_translation(self.position)
+            * g_types::Mat4::from_axis_angle(
+                g_types::vec3(0.0, 0.0, 1.0),
+                g_types::Deg(90.0) * time,
+            );
+        let model_bytes = std::slice::from_raw_parts(
+            &model_mat as *const g_types::Mat4 as *const u8,
+            size_of::<g_types::Mat4>(),
+        );
+
+        logical_device.cmd_push_constants(
+            command_buffer,
+            pipeline.pipeline_layout,
+            vk::ShaderStageFlags::VERTEX,
+            0,
+            model_bytes,
+        );
+
+        logical_device.cmd_push_constants(
+            command_buffer,
+            pipeline.pipeline_layout,
+            vk::ShaderStageFlags::FRAGMENT,
+            64,
+            &[
+                (model_index % 2).to_ne_bytes(),
+                (model_index % 2).to_ne_bytes(),
+            ]
+            .concat(),
+        );
+    }
+
+    pub unsafe fn draw_model(
+        &self,
+        logical_device: &Device,
+        command_buffer: vk::CommandBuffer,
+    ) -> Result<()> {
+        logical_device.cmd_bind_vertex_buffers(
+            command_buffer,
+            0,
+            &[self.vertex_buffer.get_buffer()],
+            &[0],
+        );
+
+        logical_device.cmd_bind_index_buffer(
+            command_buffer,
+            self.index_buffer.get_buffer(),
+            0,
+            vk::IndexType::UINT32,
+        );
+
+        logical_device.cmd_draw_indexed(
+            command_buffer,
+            self.index_buffer.get_indice_count(),
+            1,
+            0,
+            0,
+            0,
+        );
+
+        Ok(())
+    }
+
+    pub unsafe fn make_command_buffer(
+        &mut self,
+        logical_device: &Device,
+        image_index: usize,
+        model_index: usize,
+        command_buffers: &mut Vec<vk::CommandBuffer>,
+        command_pool_sets: &Vec<g_types::CommandPoolSet>,
+        pipeline: &Pipeline,
+        framebuffers: &Vec<vk::Framebuffer>,
+        descriptor_sets: &Vec<vk::DescriptorSet>,
+        start: std::time::Instant,
+    ) -> Result<vk::CommandBuffer> {
+        // let command_buffers = &mut self.presenter.secondary_command_buffers[image_index];
+        while model_index >= command_buffers.len() {
+            println!("Allocating new secondary command buffer");
+            let allocate_info = vk::CommandBufferAllocateInfo::builder()
+                .command_pool(command_pool_sets[image_index].graphics)
+                .level(vk::CommandBufferLevel::SECONDARY)
+                .command_buffer_count(1);
+
+            let command_buffer = logical_device.allocate_command_buffers(&allocate_info)?[0];
+            command_buffers.push(command_buffer);
+        }
+
+        let command_buffer = command_buffers[model_index];
+
+        let inheritance_info = vk::CommandBufferInheritanceInfo::builder()
+            .render_pass(pipeline.render_pass)
+            .subpass(0)
+            .framebuffer(framebuffers[image_index]);
+
+        let info = vk::CommandBufferBeginInfo::builder()
+            .flags(vk::CommandBufferUsageFlags::RENDER_PASS_CONTINUE)
+            .inheritance_info(&inheritance_info);
+
+        logical_device.begin_command_buffer(command_buffer, &info)?;
+
+        let time = start.elapsed().as_secs_f32();
+
+        let y = (((model_index % 2) as f32) * 2.5) - 1.25;
+        let z = (((model_index / 2) as f32) * -2.0) + 1.0;
+
+        logical_device.cmd_bind_pipeline(
+            command_buffer,
+            vk::PipelineBindPoint::GRAPHICS,
+            pipeline.pipeline,
+        );
+
+        logical_device.cmd_bind_descriptor_sets(
+            command_buffer,
+            vk::PipelineBindPoint::GRAPHICS,
+            pipeline.pipeline_layout,
+            0,
+            &[descriptor_sets[image_index]],
+            &[],
+        );
+
+        // for (_name, model) in self.model_manager.models.iter() {
+        // let model = self.model_manager.models.get_mut(model_name).unwrap();
+        self.set_position(g_types::vec3(0.0, y, z));
+
+        logical_device.cmd_bind_vertex_buffers(
+            command_buffer,
+            0,
+            &[self.vertex_buffer.get_buffer()],
+            &[0],
+        );
+
+        logical_device.cmd_bind_index_buffer(
+            command_buffer,
+            self.index_buffer.get_buffer(),
+            0,
+            vk::IndexType::UINT32,
+        );
+
+        let model_mat = g_types::Mat4::from_translation(self.position)
+            * g_types::Mat4::from_axis_angle(
+                g_types::vec3(0.0, 0.0, 1.0),
+                g_types::Deg(90.0) * time,
+            );
+        let model_bytes = std::slice::from_raw_parts(
+            &model_mat as *const g_types::Mat4 as *const u8,
+            size_of::<g_types::Mat4>(),
+        );
+
+        logical_device.cmd_push_constants(
+            command_buffer,
+            pipeline.pipeline_layout,
+            vk::ShaderStageFlags::VERTEX,
+            0,
+            model_bytes,
+        );
+
+        logical_device.cmd_push_constants(
+            command_buffer,
+            pipeline.pipeline_layout,
+            vk::ShaderStageFlags::FRAGMENT,
+            64,
+            &[
+                (model_index % 2).to_ne_bytes(),
+                (model_index % 2).to_ne_bytes(),
+            ]
+            .concat(),
+        );
+
+        logical_device.cmd_draw_indexed(
+            command_buffer,
+            self.index_buffer.get_indice_count(),
+            1,
+            0,
+            0,
+            0,
+        );
+        // }
+
+        logical_device.end_command_buffer(command_buffer)?;
+
+        Ok(command_buffer)
     }
 
     pub unsafe fn destroy(&mut self, logical_device: &Device) {

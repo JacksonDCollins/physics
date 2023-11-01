@@ -345,23 +345,67 @@ impl RenderEngine {
             .render_area(render_area)
             .clear_values(clear_values);
 
-        logical_device.cmd_begin_render_pass(
+        logical_device.cmd_begin_render_pass(command_buffer, &info, vk::SubpassContents::INLINE);
+
+        // let secondary_command_buffers = (0..4)
+        //     .map(|i| {
+        //         self.update_secondary_command_buffer(
+        //             logical_device,
+        //             image_index,
+        //             i,
+        //             if i % 3 == 0 { "sphere" } else { "room" },
+        //         )
+        //     })
+        //     .collect::<Result<Vec<_>, _>>()?;
+
+        // let secondary_command_buffers = self
+        //     .model_manager
+        //     .models
+        //     .values_mut()
+        //     .enumerate()
+        //     .map(|(index, model)| {
+        //         model.make_command_buffer(
+        //             logical_device,
+        //             image_index,
+        //             index,
+        //             &mut self.presenter.secondary_command_buffers[image_index],
+        //             &self.presenter.command_pool_sets,
+        //             &self.pipeline,
+        //             &self.presenter.framebuffers,
+        //             &self.presenter.descriptor_sets,
+        //             self.start,
+        //         )
+        //     })
+        //     .collect::<Result<Vec<_>>>()?;
+
+        // logical_device.cmd_execute_commands(command_buffer, &secondary_command_buffers[..]);
+
+        logical_device.cmd_bind_pipeline(
             command_buffer,
-            &info,
-            vk::SubpassContents::SECONDARY_COMMAND_BUFFERS,
+            vk::PipelineBindPoint::GRAPHICS,
+            self.pipeline.pipeline,
         );
 
-        let secondary_command_buffers = (0..4)
-            .map(|i| {
-                self.update_secondary_command_buffer(
-                    logical_device,
-                    image_index,
-                    i,
-                    if i % 3 == 0 { "sphere" } else { "room" },
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        logical_device.cmd_execute_commands(command_buffer, &secondary_command_buffers[..]);
+        logical_device.cmd_bind_descriptor_sets(
+            command_buffer,
+            vk::PipelineBindPoint::GRAPHICS,
+            self.pipeline.pipeline_layout,
+            0,
+            &[self.presenter.descriptor_sets[image_index]],
+            &[],
+        );
+
+        for (model_index, model) in self.model_manager.models.values_mut().enumerate() {
+            model.push_constants(
+                logical_device,
+                command_buffer,
+                &self.pipeline,
+                self.start,
+                model_index,
+            );
+
+            model.draw_model(logical_device, command_buffer)?
+        }
 
         logical_device.cmd_end_render_pass(command_buffer);
 
@@ -422,7 +466,9 @@ impl RenderEngine {
         );
 
         // for (_name, model) in self.model_manager.models.iter() {
-        let model = self.model_manager.models.get(model_name).unwrap();
+        let model = self.model_manager.models.get_mut(model_name).unwrap();
+        model.set_position(g_types::vec3(0.0, y, z));
+
         logical_device.cmd_bind_vertex_buffers(
             command_buffer,
             0,
@@ -437,7 +483,7 @@ impl RenderEngine {
             vk::IndexType::UINT32,
         );
 
-        let model_mat = g_types::Mat4::from_translation(g_types::vec3(0.0, y, z))
+        let model_mat = g_types::Mat4::from_translation(model.position)
             * g_types::Mat4::from_axis_angle(
                 g_types::vec3(0.0, 0.0, 1.0),
                 g_types::Deg(90.0) * time,

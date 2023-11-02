@@ -7,6 +7,7 @@ use vulkanalia::{
     loader::{LibloadingLoader, LIBRARY},
     Entry,
 };
+use winit::event::WindowEvent;
 use winit::window::Window;
 
 pub struct App {
@@ -15,7 +16,8 @@ pub struct App {
     logical_device: Device,
     physical_device: vk::PhysicalDevice,
     dbg_messenger: Option<vk::DebugUtilsMessengerEXT>,
-    render_engine: graphics::engine::RenderEngine,
+    render_engine: graphics::engines::RenderEngine,
+    pub input_engine: graphics::engines::InputEngine,
     frame: usize,
     pub resized: bool,
 }
@@ -36,7 +38,7 @@ impl App {
             queue_family_indices,
         )?;
 
-        let render_engine = graphics::engine::RenderEngine::create(
+        let render_engine = graphics::engines::RenderEngine::create(
             window,
             &instance,
             &logical_device,
@@ -48,6 +50,7 @@ impl App {
             msaa_samples,
         )?;
 
+        let input_engine = graphics::engines::InputEngine::create();
         Ok(Self {
             entry,
             instance,
@@ -55,12 +58,15 @@ impl App {
             physical_device,
             dbg_messenger,
             render_engine,
+            input_engine,
             frame: 0,
             resized: false,
         })
     }
 
     pub unsafe fn render(&mut self, window: &Window) -> Result<()> {
+        println!("{:?}", self.input_engine.keydata);
+
         self.render_engine.render(
             window,
             &self.logical_device,
@@ -75,6 +81,14 @@ impl App {
         // log::info!("frame: {}", self.frame);
 
         Ok(())
+    }
+
+    pub fn input(&mut self, event: &WindowEvent) {
+        self.input_engine.update(event)
+    }
+
+    pub fn clear_old_input(&mut self) {
+        self.input_engine.clear_old_input();
     }
 
     pub unsafe fn device_wait_idle(&self) -> Result<()> {

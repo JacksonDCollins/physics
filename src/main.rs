@@ -5,7 +5,7 @@ pub mod graphics;
 use anyhow::Result;
 
 use winit::{
-    event::{Event, WindowEvent},
+    event::{DeviceEvent, Event, KeyboardInput, VirtualKeyCode, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     window::WindowBuilder,
 };
@@ -25,32 +25,37 @@ fn main() -> Result<()> {
     let mut minimized = false;
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
+
         match event {
             Event::MainEventsCleared if !destroying && !minimized => {
-                unsafe { app.render(&window) }.unwrap()
+                unsafe { app.render(&window) }.unwrap();
+                app.clear_old_input();
             }
             Event::WindowEvent {
                 event: window_event,
                 ..
-            } => match window_event {
-                WindowEvent::CloseRequested => {
-                    destroying = true;
-                    *control_flow = ControlFlow::Exit;
-                    unsafe {
-                        app.device_wait_idle().unwrap();
-                        app.destroy();
+            } => {
+                app.input(&window_event);
+                match window_event {
+                    WindowEvent::CloseRequested => {
+                        destroying = true;
+                        *control_flow = ControlFlow::Exit;
+                        unsafe {
+                            app.device_wait_idle().unwrap();
+                            app.destroy();
+                        }
                     }
-                }
-                WindowEvent::Resized(size) => {
-                    if size.width == 0 || size.height == 0 {
-                        minimized = true;
-                    } else {
-                        minimized = false;
-                        app.resized = true;
+                    WindowEvent::Resized(size) => {
+                        if size.width == 0 || size.height == 0 {
+                            minimized = true;
+                        } else {
+                            minimized = false;
+                            app.resized = true;
+                        }
                     }
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
             _ => {}
         }
     });

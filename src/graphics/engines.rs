@@ -3,12 +3,17 @@ use crate::graphics::types as g_types;
 use crate::graphics::utils as g_utils;
 
 use anyhow::{anyhow, Result};
+use std::collections::HashMap;
 use std::mem::size_of;
 use std::time::Instant;
 use vk::SurfaceKHR;
 use vulkanalia::prelude::v1_2::*;
 use vulkanalia::vk::KhrSurfaceExtension;
 use vulkanalia::vk::KhrSwapchainExtension;
+use winit::event::ElementState;
+use winit::event::KeyboardInput;
+use winit::event::VirtualKeyCode;
+use winit::event::WindowEvent;
 
 use winit::window::Window;
 
@@ -225,8 +230,8 @@ impl RenderEngine {
 
         self.presenter.images_in_flight[image_index] = self.presenter.in_flight_fences[frame];
 
-        self.update_command_buffer(logical_device, image_index)?;
         self.update_uniform_buffer(image_index)?;
+        self.update_command_buffer(logical_device, image_index)?;
 
         let wait_semaphores = &[self.presenter.image_available_semaphores[frame]];
         let wait_stages = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -535,5 +540,41 @@ impl RenderEngine {
         self.pipeline.destroy(logical_device);
         self.swapchain.destroy(logical_device);
         instance.destroy_surface_khr(self.surface, None);
+    }
+}
+
+pub struct InputEngine {
+    pub keydata: HashMap<VirtualKeyCode, ElementState>,
+}
+
+impl InputEngine {
+    pub fn create() -> Self {
+        Self {
+            keydata: HashMap::new(),
+        }
+    }
+
+    pub fn update(&mut self, event: &WindowEvent) {
+        match event {
+            WindowEvent::KeyboardInput {
+                input:
+                    KeyboardInput {
+                        state,
+                        virtual_keycode: Some(keycode),
+                        ..
+                    },
+                ..
+            } => {
+                self.keydata
+                    .entry(*keycode)
+                    .and_modify(|e| *e = *state)
+                    .or_insert(*state);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn clear_old_input(&mut self) {
+        self.keydata.retain(|_, v| *v == ElementState::Pressed);
     }
 }

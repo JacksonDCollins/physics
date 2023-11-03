@@ -188,6 +188,7 @@ impl RenderEngine {
         instance: &Instance,
         frame: usize,
         resized: &mut bool,
+        camera: &crate::controller::camera::Camera,
     ) -> Result<()> {
         logical_device.wait_for_fences(
             &[self.presenter.in_flight_fences[frame]],
@@ -230,7 +231,7 @@ impl RenderEngine {
 
         self.presenter.images_in_flight[image_index] = self.presenter.in_flight_fences[frame];
 
-        self.update_uniform_buffer(image_index)?;
+        self.update_uniform_buffer(image_index, camera)?;
         self.update_command_buffer(logical_device, image_index)?;
 
         let wait_semaphores = &[self.presenter.image_available_semaphores[frame]];
@@ -273,17 +274,12 @@ impl RenderEngine {
         Ok(())
     }
 
-    pub unsafe fn update_uniform_buffer(&mut self, image_index: usize) -> Result<()> {
-        // let time = self.start.elapsed().as_secs_f32();
-
-        // let model =
-        //     g_types::Mat4::from_axis_angle(g_types::vec3(0.0, 0.0, 1.0), g_types::Deg(90.0) * time);
-
-        let view = g_types::Mat4::look_at_rh(
-            g_types::point3(6.0, 0.0, 2.0),
-            g_types::point3(0.0, 0.0, 0.0),
-            g_types::vec3(0.0, 0.0, 1.0),
-        );
+    pub unsafe fn update_uniform_buffer(
+        &mut self,
+        image_index: usize,
+        camera: &crate::controller::camera::Camera,
+    ) -> Result<()> {
+        let view = camera.get_view_matrix();
 
         #[rustfmt::skip]
         let correction = g_types::Mat4::new(
@@ -299,7 +295,7 @@ impl RenderEngine {
                 g_types::Deg(45.0),
                 self.swapchain.extent.width as f32 / self.swapchain.extent.height as f32,
                 0.1,
-                10.0,
+                100.0,
             );
 
         let ubo = g_types::UniformBufferObject { view, proj };
@@ -540,41 +536,5 @@ impl RenderEngine {
         self.pipeline.destroy(logical_device);
         self.swapchain.destroy(logical_device);
         instance.destroy_surface_khr(self.surface, None);
-    }
-}
-
-pub struct InputEngine {
-    pub keydata: HashMap<VirtualKeyCode, ElementState>,
-}
-
-impl InputEngine {
-    pub fn create() -> Self {
-        Self {
-            keydata: HashMap::new(),
-        }
-    }
-
-    pub fn update(&mut self, event: &WindowEvent) {
-        match event {
-            WindowEvent::KeyboardInput {
-                input:
-                    KeyboardInput {
-                        state,
-                        virtual_keycode: Some(keycode),
-                        ..
-                    },
-                ..
-            } => {
-                self.keydata
-                    .entry(*keycode)
-                    .and_modify(|e| *e = *state)
-                    .or_insert(*state);
-            }
-            _ => {}
-        }
-    }
-
-    pub fn clear_old_input(&mut self) {
-        self.keydata.retain(|_, v| *v == ElementState::Pressed);
     }
 }

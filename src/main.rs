@@ -1,13 +1,15 @@
 #![allow(clippy::missing_safety_doc, clippy::too_many_arguments)]
 pub mod app;
+pub mod controller;
 pub mod graphics;
+pub mod input;
 
 use anyhow::Result;
 
 use winit::{
     event::{DeviceEvent, Event, KeyboardInput, VirtualKeyCode, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
-    window::WindowBuilder,
+    window::{CursorGrabMode, WindowBuilder},
 };
 
 use app::App;
@@ -19,6 +21,13 @@ fn main() -> Result<()> {
     let window = WindowBuilder::new()
         .with_title("Vulkan")
         .build(&event_loop)?;
+
+    window
+        .set_cursor_grab(CursorGrabMode::Confined)
+        .or_else(|_e| window.set_cursor_grab(CursorGrabMode::Locked))?;
+
+    window.set_cursor_visible(false);
+
     let mut app = unsafe { App::create(&window) }?;
 
     let mut destroying = false;
@@ -28,14 +37,18 @@ fn main() -> Result<()> {
 
         match event {
             Event::MainEventsCleared if !destroying && !minimized => {
+                app.tick();
                 unsafe { app.render(&window) }.unwrap();
-                app.clear_old_input();
             }
+            Event::DeviceEvent {
+                event: DeviceEvent::MouseMotion { delta },
+                ..
+            } => app.update_mouse_motion(delta),
             Event::WindowEvent {
                 event: window_event,
                 ..
             } => {
-                app.input(&window_event);
+                app.window_input(&window_event);
                 match window_event {
                     WindowEvent::CloseRequested => {
                         destroying = true;

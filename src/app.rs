@@ -1,5 +1,5 @@
-use crate::graphics;
 use crate::graphics::utils as g_utils;
+use crate::{controller, graphics, input};
 use anyhow::{anyhow, Result};
 use vulkanalia::prelude::v1_2::*;
 use vulkanalia::vk::ExtDebugUtilsExtension;
@@ -16,8 +16,9 @@ pub struct App {
     logical_device: Device,
     physical_device: vk::PhysicalDevice,
     dbg_messenger: Option<vk::DebugUtilsMessengerEXT>,
-    render_engine: graphics::engines::RenderEngine,
-    pub input_engine: graphics::engines::InputEngine,
+    render_engine: graphics::engine::RenderEngine,
+    pub input_engine: input::engine::InputEngine,
+    camera: controller::camera::Camera,
     frame: usize,
     pub resized: bool,
 }
@@ -38,7 +39,7 @@ impl App {
             queue_family_indices,
         )?;
 
-        let render_engine = graphics::engines::RenderEngine::create(
+        let render_engine = graphics::engine::RenderEngine::create(
             window,
             &instance,
             &logical_device,
@@ -50,7 +51,10 @@ impl App {
             msaa_samples,
         )?;
 
-        let input_engine = graphics::engines::InputEngine::create();
+        let input_engine = input::engine::InputEngine::create();
+
+        let camera = controller::camera::Camera::create();
+
         Ok(Self {
             entry,
             instance,
@@ -59,14 +63,13 @@ impl App {
             dbg_messenger,
             render_engine,
             input_engine,
+            camera,
             frame: 0,
             resized: false,
         })
     }
 
     pub unsafe fn render(&mut self, window: &Window) -> Result<()> {
-        println!("{:?}", self.input_engine.keydata);
-
         self.render_engine.render(
             window,
             &self.logical_device,
@@ -74,21 +77,27 @@ impl App {
             &self.instance,
             self.frame,
             &mut self.resized,
+            &self.camera,
         )?;
 
         self.frame = (self.frame + 1) % g_utils::MAX_FRAMES_IN_FLIGHT;
 
-        // log::info!("frame: {}", self.frame);
-
         Ok(())
     }
 
-    pub fn input(&mut self, event: &WindowEvent) {
+    pub fn tick(&mut self) {
+        self.camera.update(&self.input_engine.keydata);
+        self.camera
+            .update_mouse_motion(self.input_engine.recent_delta);
+        self.input_engine.clear_old_input();
+    }
+
+    pub fn window_input(&mut self, event: &WindowEvent) {
         self.input_engine.update(event)
     }
 
-    pub fn clear_old_input(&mut self) {
-        self.input_engine.clear_old_input();
+    pub fn update_mouse_motion(&mut self, delta: (f64, f64)) {
+        self.input_engine.update_mouse_motion(delta)
     }
 
     pub unsafe fn device_wait_idle(&self) -> Result<()> {

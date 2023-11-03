@@ -10,6 +10,7 @@ use vulkanalia::prelude::v1_2::*;
 pub type Vec2 = cgmath::Vector2<f32>;
 pub type Vec3 = cgmath::Vector3<f32>;
 pub type Mat4 = cgmath::Matrix4<f32>;
+pub type Point3 = cgmath::Point3<f32>;
 
 // pub static VERTICES: [Vertex; 8] = [
 //     Vertex::new(vec3(-0.5, -0.5, 0.0), vec3(1.0, 0.0, 0.0), vec2(1.0, 0.0)),

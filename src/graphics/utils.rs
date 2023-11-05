@@ -494,20 +494,40 @@ pub unsafe fn create_swapchain_image_views(
         .collect::<Result<Vec<_>, _>>()
 }
 
-pub unsafe fn create_pipeline_and_renderpass(
-    instance: &Instance,
+pub unsafe fn create_pipeline_layout(
     logical_device: &Device,
-    physical_device: vk::PhysicalDevice,
-    swapchain: &g_objects::Swapchain,
     descriptor_set_layout: vk::DescriptorSetLayout,
+) -> Result<vk::PipelineLayout> {
+    let vert_push_constant_range = vk::PushConstantRange::builder()
+        .stage_flags(vk::ShaderStageFlags::VERTEX)
+        .offset(0)
+        .size(64 /* 16 × 4 byte floats */);
+
+    let frag_push_constant_range = vk::PushConstantRange::builder()
+        .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+        .offset(64)
+        .size(16 /* 2 x 4 byte ints */);
+
+    let set_layouts = &[descriptor_set_layout];
+    let push_constant_ranges = &[vert_push_constant_range, frag_push_constant_range];
+    let layout_info = vk::PipelineLayoutCreateInfo::builder()
+        .set_layouts(set_layouts)
+        .push_constant_ranges(push_constant_ranges);
+    logical_device
+        .create_pipeline_layout(&layout_info, None)
+        .map_err(|e| anyhow!("{}", e))
+}
+
+pub unsafe fn create_pipeline(
+    logical_device: &Device,
+    vert_shader_module: vk::ShaderModule,
+    frag_shader_module: vk::ShaderModule,
+    width: u32,
+    height: u32,
     msaa_samples: vk::SampleCountFlags,
-) -> Result<(vk::PipelineLayout, vk::RenderPass, vk::Pipeline)> {
-    let vert = include_bytes!("../../shaders/vert.spv");
-    let frag = include_bytes!("../../shaders/frag.spv");
-
-    let vert_shader_module = create_shader_module(logical_device, &vert[..])?;
-    let frag_shader_module = create_shader_module(logical_device, &frag[..])?;
-
+    pipeline_layout: vk::PipelineLayout,
+    render_pass: vk::RenderPass,
+) -> Result<vk::Pipeline> {
     let vert_stage = vk::PipelineShaderStageCreateInfo::builder()
         .stage(vk::ShaderStageFlags::VERTEX)
         .module(vert_shader_module)
@@ -531,14 +551,14 @@ pub unsafe fn create_pipeline_and_renderpass(
     let viewport = vk::Viewport::builder()
         .x(0.0)
         .y(0.0)
-        .width(swapchain.extent.width as f32)
-        .height(swapchain.extent.height as f32)
+        .width(width as f32)
+        .height(height as f32)
         .min_depth(0.0)
         .max_depth(1.0);
 
     let scissor = vk::Rect2D::builder()
         .offset(vk::Offset2D { x: 0, y: 0 })
-        .extent(swapchain.extent);
+        .extent(vk::Extent2D { width, height });
 
     let viewports = &[viewport];
     let scissors = &[scissor];
@@ -585,31 +605,6 @@ pub unsafe fn create_pipeline_and_renderpass(
         .attachments(attachments)
         .blend_constants([0.0, 0.0, 0.0, 0.0]);
 
-    let vert_push_constant_range = vk::PushConstantRange::builder()
-        .stage_flags(vk::ShaderStageFlags::VERTEX)
-        .offset(0)
-        .size(64 /* 16 × 4 byte floats */);
-
-    let frag_push_constant_range = vk::PushConstantRange::builder()
-        .stage_flags(vk::ShaderStageFlags::FRAGMENT)
-        .offset(64)
-        .size(16 /* 2 x 4 byte ints */);
-
-    let set_layouts = &[descriptor_set_layout];
-    let push_constant_ranges = &[vert_push_constant_range, frag_push_constant_range];
-    let layout_info = vk::PipelineLayoutCreateInfo::builder()
-        .set_layouts(set_layouts)
-        .push_constant_ranges(push_constant_ranges);
-    let pipeline_layout = logical_device.create_pipeline_layout(&layout_info, None)?;
-
-    let render_pass = create_render_pass(
-        instance,
-        logical_device,
-        physical_device,
-        swapchain,
-        msaa_samples,
-    )?;
-
     let stages = &[vert_stage, frag_stage];
     let info = vk::GraphicsPipelineCreateInfo::builder()
         .stages(stages)
@@ -624,9 +619,45 @@ pub unsafe fn create_pipeline_and_renderpass(
         .render_pass(render_pass)
         .subpass(0);
 
-    let pipeline = logical_device
+    Ok(logical_device
         .create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)?
-        .0[0];
+        .0[0])
+}
+
+pub unsafe fn create_pipeline_and_renderpass(
+    instance: &Instance,
+    logical_device: &Device,
+    physical_device: vk::PhysicalDevice,
+    swapchain: &g_objects::Swapchain,
+    descriptor_set_layout: vk::DescriptorSetLayout,
+    msaa_samples: vk::SampleCountFlags,
+) -> Result<(vk::PipelineLayout, vk::RenderPass, vk::Pipeline)> {
+    let pipeline_layout = create_pipeline_layout(logical_device, descriptor_set_layout)?;
+
+    let render_pass = create_render_pass(
+        instance,
+        logical_device,
+        physical_device,
+        swapchain,
+        msaa_samples,
+    )?;
+
+    let vert = include_bytes!("../../shaders/vert.spv");
+    let frag = include_bytes!("../../shaders/frag.spv");
+
+    let vert_shader_module = create_shader_module(logical_device, &vert[..])?;
+    let frag_shader_module = create_shader_module(logical_device, &frag[..])?;
+
+    let pipeline = create_pipeline(
+        logical_device,
+        vert_shader_module,
+        frag_shader_module,
+        swapchain.extent.width,
+        swapchain.extent.height,
+        msaa_samples,
+        pipeline_layout,
+        render_pass,
+    )?;
 
     logical_device.destroy_shader_module(vert_shader_module, None);
     logical_device.destroy_shader_module(frag_shader_module, None);
@@ -634,7 +665,7 @@ pub unsafe fn create_pipeline_and_renderpass(
     Ok((pipeline_layout, render_pass, pipeline))
 }
 
-unsafe fn create_shader_module(
+pub unsafe fn create_shader_module(
     logical_device: &Device,
     bytecode: &[u8],
 ) -> Result<vk::ShaderModule> {
@@ -1007,7 +1038,6 @@ pub unsafe fn get_memory_info(
 pub unsafe fn create_descriptor_set_layout(
     logical_device: &Device,
     texture_count: u32,
-    sampler_count: u32,
 ) -> Result<vk::DescriptorSetLayout> {
     let ubo_binding = vk::DescriptorSetLayoutBinding::builder()
         .binding(0)
@@ -1017,17 +1047,11 @@ pub unsafe fn create_descriptor_set_layout(
 
     let sampler_binding = vk::DescriptorSetLayoutBinding::builder()
         .binding(1)
-        .descriptor_type(vk::DescriptorType::SAMPLER)
-        .descriptor_count(sampler_count)
-        .stage_flags(vk::ShaderStageFlags::FRAGMENT);
-
-    let texture_bindings = vk::DescriptorSetLayoutBinding::builder()
-        .binding(2)
-        .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
         .descriptor_count(texture_count)
         .stage_flags(vk::ShaderStageFlags::FRAGMENT);
 
-    let bindings = &[ubo_binding, sampler_binding, texture_bindings];
+    let bindings = &[ubo_binding, sampler_binding];
     let info = vk::DescriptorSetLayoutCreateInfo::builder().bindings(bindings);
 
     logical_device
@@ -1043,21 +1067,16 @@ pub unsafe fn create_descriptor_pool(
     logical_device: &Device,
     swapchain_images_count: u32,
     texture_count: u32,
-    sampler_count: u32,
 ) -> Result<vk::DescriptorPool> {
     let ubo_size = vk::DescriptorPoolSize::builder()
         .type_(vk::DescriptorType::UNIFORM_BUFFER)
         .descriptor_count(swapchain_images_count);
 
     let sampler_size = vk::DescriptorPoolSize::builder()
-        .type_(vk::DescriptorType::SAMPLER)
-        .descriptor_count(swapchain_images_count * sampler_count);
-
-    let texture_size = vk::DescriptorPoolSize::builder()
-        .type_(vk::DescriptorType::SAMPLED_IMAGE)
+        .type_(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
         .descriptor_count(swapchain_images_count * texture_count);
 
-    let pool_sizes = &[ubo_size, sampler_size, texture_size];
+    let pool_sizes = &[ubo_size, sampler_size];
     let info = vk::DescriptorPoolCreateInfo::builder()
         .pool_sizes(pool_sizes)
         .max_sets(swapchain_images_count);
@@ -1081,193 +1100,6 @@ pub unsafe fn create_descriptor_sets(
     let descriptor_sets = logical_device.allocate_descriptor_sets(&info)?;
 
     Ok(descriptor_sets)
-}
-
-pub unsafe fn update_descriptor_sets(
-    logical_device: &Device,
-    swapchain_images_count: usize,
-    uniform_buffers: &[g_objects::UniformBuffer],
-    descriptor_sets: &[vk::DescriptorSet],
-    // texture_image_view: vk::ImageView,
-    // texture_sampler: vk::Sampler,
-    texture_engine: &g_objects::TextureMemoryAllocator,
-) {
-    for i in 0..swapchain_images_count {
-        let buffer_info = vk::DescriptorBufferInfo::builder()
-            .buffer(uniform_buffers[i].get_buffer())
-            .offset(0)
-            .range(uniform_buffers[i].get_size());
-        let buffer_info = &[buffer_info];
-
-        let sampler_info = &texture_engine
-            .samplers
-            .values()
-            .map(|sampler| {
-                vk::DescriptorImageInfo::builder()
-                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .sampler(*sampler)
-                    .build()
-            })
-            .collect::<Vec<_>>();
-
-        let image_info = &texture_engine
-            .textures
-            .iter()
-            .map(|texture| {
-                vk::DescriptorImageInfo::builder()
-                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .image_view(texture.image_view)
-                    .build()
-            })
-            .collect::<Vec<_>>();
-
-        let ubo_write = vk::WriteDescriptorSet::builder()
-            .dst_set(descriptor_sets[i])
-            .dst_binding(0)
-            .dst_array_element(0)
-            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-            .buffer_info(buffer_info);
-
-        let sampler_info_write = vk::WriteDescriptorSet::builder()
-            .dst_set(descriptor_sets[i])
-            .dst_binding(1)
-            .dst_array_element(0)
-            .descriptor_type(vk::DescriptorType::SAMPLER)
-            .image_info(sampler_info);
-
-        let image_info_write = vk::WriteDescriptorSet::builder()
-            .dst_set(descriptor_sets[i])
-            .dst_binding(2)
-            .dst_array_element(0)
-            .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
-            .image_info(image_info);
-
-        logical_device.update_descriptor_sets(
-            &[ubo_write, sampler_info_write, image_info_write],
-            &[] as &[vk::CopyDescriptorSet],
-        );
-    }
-}
-
-pub unsafe fn create_texture_image(
-    instance: &Instance,
-    logical_device: &Device,
-    physical_device: vk::PhysicalDevice,
-    command_pool_set: &g_types::CommandPoolSet,
-    queue_set: &QueueSet,
-) -> Result<(vk::Image, vk::DeviceMemory, u32)> {
-    let image = File::open("resources/viking_room.png")?;
-
-    let decoder = png::Decoder::new(image);
-    let mut reader = decoder.read_info()?;
-
-    let mut pixels = vec![0; reader.info().raw_bytes()];
-    reader.next_frame(&mut pixels)?;
-
-    let size = reader.info().raw_bytes() as u64;
-    let (width, height) = reader.info().size();
-
-    let mip_levels = (width.max(height) as f32).log2().floor() as u32 + 1;
-
-    let (staging_buffer, staging_buffer_memory, _) = create_buffer_and_memory(
-        instance,
-        logical_device,
-        physical_device,
-        size,
-        vk::BufferUsageFlags::TRANSFER_SRC,
-        vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
-    )?;
-
-    let memory =
-        logical_device.map_memory(staging_buffer_memory, 0, size, vk::MemoryMapFlags::empty())?;
-
-    memcpy(pixels.as_ptr(), memory.cast(), pixels.len());
-
-    logical_device.unmap_memory(staging_buffer_memory);
-
-    let (texture_image, texture_image_memory) = create_image(
-        instance,
-        logical_device,
-        physical_device,
-        width,
-        height,
-        mip_levels,
-        vk::SampleCountFlags::_1,
-        vk::Format::R8G8B8A8_SRGB,
-        vk::ImageTiling::OPTIMAL,
-        vk::ImageUsageFlags::SAMPLED
-            | vk::ImageUsageFlags::TRANSFER_DST
-            | vk::ImageUsageFlags::TRANSFER_SRC,
-        vk::MemoryPropertyFlags::DEVICE_LOCAL,
-    )?;
-
-    transition_image_layout(
-        logical_device,
-        command_pool_set.graphics,
-        queue_set.graphics,
-        texture_image,
-        mip_levels,
-        vk::Format::R8G8B8A8_SRGB,
-        vk::ImageLayout::UNDEFINED,
-        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-        vk::QUEUE_FAMILY_IGNORED,
-        vk::QUEUE_FAMILY_IGNORED,
-    )?;
-
-    copy_buffer_to_image(
-        logical_device,
-        command_pool_set.graphics,
-        queue_set.graphics,
-        staging_buffer,
-        texture_image,
-        width,
-        height,
-        0,
-    )?;
-
-    // transition_image_layout(
-    //     logical_device,
-    //     command_pool_set.graphics,
-    //     queue_set.graphics,
-    //     texture_image,
-    //     mip_levels,
-    //     vk::Format::R8G8B8A8_SRGB,
-    //     vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-    //     vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-    //     vk::QUEUE_FAMILY_IGNORED,
-    //     vk::QUEUE_FAMILY_IGNORED,
-    // )?;
-
-    //look into doing this on transfer queue and fixing the ownership transfer
-    // transition_image_layout(
-    //     logical_device,
-    //     command_pool_set.graphics,
-    //     queue_set.graphics,
-    //     texture_image,
-    //     vk::Format::R8G8B8A8_SRGB,
-    //     vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-    //     vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-    //     queue_family_indices.transfer,
-    //     queue_family_indices.graphics,
-    // )?;
-
-    generate_mipmaps(
-        instance,
-        logical_device,
-        physical_device,
-        command_pool_set.graphics,
-        queue_set.graphics,
-        texture_image,
-        vk::Format::R8G8B8A8_SRGB,
-        width,
-        height,
-        mip_levels,
-    )?;
-
-    logical_device.destroy_buffer(staging_buffer, None);
-    logical_device.free_memory(staging_buffer_memory, None);
-
-    Ok((texture_image, texture_image_memory, mip_levels))
 }
 
 pub unsafe fn create_image(
@@ -1506,12 +1338,13 @@ pub unsafe fn create_texture_image_view(
     logical_device: &Device,
     texture_image: vk::Image,
     mip_levels: u32,
+    format: vk::Format,
 ) -> Result<vk::ImageView> {
     create_image_view(
         logical_device,
         texture_image,
         mip_levels,
-        vk::Format::R8G8B8A8_SRGB,
+        format,
         vk::ImageAspectFlags::COLOR,
     )
 }
@@ -1633,46 +1466,44 @@ unsafe fn get_depth_format(
 pub fn load_model(path: &str) -> Result<(Vec<g_types::Vertex>, Vec<u32>)> {
     let mut reader = BufReader::new(File::open(path)?);
 
-    let (models, _) = tobj::load_obj_buf(
-        &mut reader,
-        &tobj::LoadOptions {
-            triangulate: true,
-            ..Default::default()
-        },
-        |_| Ok(Default::default()),
-    )?;
+    let (models, _) = tobj::load_obj_buf(&mut reader, &tobj::GPU_LOAD_OPTIONS, |_| {
+        Ok(Default::default())
+    })?;
 
-    let mut unique_vertices = HashMap::new();
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
 
-    for model in &models {
-        for index in &model.mesh.indices {
-            let pos_offset = (3 * index) as usize;
-            let tex_coord_offset = (2 * index) as usize;
+    for model in models {
+        let vertex_triples = model
+            .mesh
+            .positions
+            .chunks(3)
+            .map(|p| g_types::vec3(p[0], p[1], p[2]))
+            .collect::<Vec<_>>();
 
-            let vertex = g_types::Vertex::new(
-                g_types::vec3(
-                    model.mesh.positions[pos_offset],
-                    model.mesh.positions[pos_offset + 1],
-                    model.mesh.positions[pos_offset + 2],
-                ),
-                g_types::vec3(1.0, 1.0, 1.0),
-                g_types::vec2(
-                    model.mesh.texcoords[tex_coord_offset],
-                    1.0 - model.mesh.texcoords[tex_coord_offset + 1],
-                ),
-            );
+        let tex_coord_pairs = model
+            .mesh
+            .texcoords
+            .chunks(2)
+            .map(|t| g_types::vec2(t[0], 1.0 - t[1]))
+            .collect::<Vec<_>>();
 
-            if let Some(index) = unique_vertices.get(&vertex) {
-                indices.push(*index);
-            } else {
-                let index = vertices.len() as u32;
-                unique_vertices.insert(vertex, index);
-                vertices.push(vertex);
-                indices.push(index);
-            }
-        }
+        let normals = model
+            .mesh
+            .normals
+            .chunks(3)
+            .map(|n| g_types::vec3(n[0], n[1], n[2]));
+
+        vertex_triples
+            .into_iter()
+            .zip(tex_coord_pairs)
+            .zip(normals)
+            .for_each(|((vertex, tex_coord), normal)| {
+                vertices.push(g_types::Vertex::new(vertex, normal, tex_coord));
+            });
+
+        let indice_len = indices.len();
+        indices.extend(model.mesh.indices.iter().map(|i| i + indice_len as u32));
     }
 
     Ok((vertices, indices))

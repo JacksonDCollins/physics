@@ -24,8 +24,6 @@ pub struct RenderEngine {
     pipeline: g_objects::Pipeline,
     presenter: g_objects::Presenter,
 
-    model_manager: g_objects::ModelManager,
-    texture_engine: g_objects::TextureMemoryAllocator,
     queue_family_indices: g_utils::QueueFamilyIndices,
     swapchain_support: g_utils::SwapchainSupport,
     msaa_samples: vk::SampleCountFlags,
@@ -44,6 +42,7 @@ impl RenderEngine {
         queue_family_indices: g_utils::QueueFamilyIndices,
         swapchain_support: g_utils::SwapchainSupport,
         msaa_samples: vk::SampleCountFlags,
+        model_manager: &mut g_objects::ModelManager,
     ) -> Result<Self> {
         let swapchain = g_objects::Swapchain::create(
             window,
@@ -52,24 +51,6 @@ impl RenderEngine {
             &queue_family_indices,
             &swapchain_support,
         )?;
-
-        // let mut buffer_memory_allocator = g_objects::BufferMemoryAllocator::create()?;
-        let mut model_manager = g_objects::ModelManager::create()?;
-
-        let sphere = g_objects::Model::create("resources/sphere.obj")?;
-
-        model_manager.add_model("sphere", sphere);
-
-        // buffer_memory_allocator.add_vertex_buffer(sphere.vertex_buffer);
-
-        // buffer_memory_allocator.set_index_buffer(sphere.index_buffer);
-
-        let room = g_objects::Model::create("resources/viking_room.obj")?;
-
-        model_manager.add_model("room", room);
-        // buffer_memory_allocator.add_vertex_buffer(room.vertex_buffer);
-
-        // buffer_memory_allocator.set_index_buffer(room.index_buffer);
 
         for _ in 0..swapchain.images.len() {
             let uniform_buffer = g_objects::UniformBuffer::create(
@@ -81,24 +62,22 @@ impl RenderEngine {
                 .add_uniform_buffer(uniform_buffer);
         }
 
-        let mut texture_engine = g_objects::TextureMemoryAllocator::create()?;
-
-        let texture = g_objects::Texture::create("resources/viking_room.png")?;
-
-        let texture2 = g_objects::Texture::create("resources/texture.png")?;
-
-        texture_engine.add_texture(texture);
-        texture_engine.add_texture(texture2);
-
-        texture_engine.prepare_samplers(logical_device)?;
-
         let pipeline = g_objects::Pipeline::create(
             instance,
             logical_device,
             physical_device,
             &swapchain,
             msaa_samples,
-            &texture_engine,
+            // &model_manager.texture_engine,
+        )?;
+
+        model_manager.create_descriptor_pools_and_sets(logical_device, swapchain.images.len())?;
+
+        model_manager.create_pipelines(
+            logical_device,
+            msaa_samples,
+            pipeline.render_pass,
+            swapchain.extent,
         )?;
 
         let presenter = g_objects::Presenter::create(
@@ -106,8 +85,7 @@ impl RenderEngine {
             &swapchain,
             &pipeline,
             &queue_family_indices,
-            &mut model_manager,
-            &mut texture_engine,
+            model_manager,
             instance,
             physical_device,
             &queue_set,
@@ -121,8 +99,6 @@ impl RenderEngine {
             pipeline,
             presenter,
 
-            model_manager,
-            texture_engine,
             queue_family_indices,
             swapchain_support,
             msaa_samples,
@@ -137,6 +113,7 @@ impl RenderEngine {
         instance: &Instance,
         logical_device: &Device,
         physical_device: vk::PhysicalDevice,
+        model_manager: &mut g_objects::ModelManager,
     ) -> Result<()> {
         logical_device.device_wait_idle()?;
 
@@ -161,7 +138,13 @@ impl RenderEngine {
             physical_device,
             &self.swapchain,
             self.msaa_samples,
-            &self.texture_engine,
+        )?;
+
+        model_manager.recreate_pipelines(
+            logical_device,
+            self.msaa_samples,
+            self.pipeline.render_pass,
+            self.swapchain.extent,
         )?;
 
         self.presenter = g_objects::Presenter::create(
@@ -169,8 +152,7 @@ impl RenderEngine {
             &self.swapchain,
             &self.pipeline,
             &self.queue_family_indices,
-            &mut self.model_manager,
-            &mut self.texture_engine,
+            model_manager,
             instance,
             physical_device,
             &self.queue_set,
@@ -189,6 +171,8 @@ impl RenderEngine {
         frame: usize,
         resized: &mut bool,
         camera: &crate::controller::camera::Camera,
+        scene: &g_objects::Scene,
+        model_manager: &mut g_objects::ModelManager,
     ) -> Result<()> {
         logical_device.wait_for_fences(
             &[self.presenter.in_flight_fences[frame]],
@@ -211,12 +195,19 @@ impl RenderEngine {
                         instance,
                         logical_device,
                         physical_device,
+                        model_manager,
                     )
                 }
                 (index, _) => index as usize,
             },
             Err(vk::ErrorCode::OUT_OF_DATE_KHR) => {
-                return self.recreate_sawpchain(window, instance, logical_device, physical_device)
+                return self.recreate_sawpchain(
+                    window,
+                    instance,
+                    logical_device,
+                    physical_device,
+                    model_manager,
+                )
             }
             Err(error) => return Err(anyhow!(error)),
         };
@@ -231,8 +222,8 @@ impl RenderEngine {
 
         self.presenter.images_in_flight[image_index] = self.presenter.in_flight_fences[frame];
 
-        self.update_uniform_buffer(image_index, camera)?;
-        self.update_command_buffer(logical_device, image_index)?;
+        self.update_uniform_buffer(image_index, camera, model_manager)?;
+        self.update_command_buffer(logical_device, image_index, scene, model_manager)?;
 
         let wait_semaphores = &[self.presenter.image_available_semaphores[frame]];
         let wait_stages = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -266,7 +257,13 @@ impl RenderEngine {
 
         if *resized || changed {
             *resized = false;
-            self.recreate_sawpchain(window, instance, logical_device, physical_device)?;
+            self.recreate_sawpchain(
+                window,
+                instance,
+                logical_device,
+                physical_device,
+                model_manager,
+            )?;
         } else if let Err(e) = result {
             return Err(anyhow!(e));
         }
@@ -278,6 +275,7 @@ impl RenderEngine {
         &mut self,
         image_index: usize,
         camera: &crate::controller::camera::Camera,
+        model_manager: &mut g_objects::ModelManager,
     ) -> Result<()> {
         let view = camera.get_view_matrix();
 
@@ -300,7 +298,7 @@ impl RenderEngine {
 
         let ubo = g_types::UniformBufferObject { view, proj };
 
-        self.model_manager
+        model_manager
             .buffer_allocator
             .update_uniform_buffer(ubo, image_index)?;
 
@@ -311,6 +309,8 @@ impl RenderEngine {
         &mut self,
         logical_device: &Device,
         image_index: usize,
+        scene: &g_objects::Scene,
+        model_manager: &g_objects::ModelManager,
     ) -> Result<()> {
         let command_pool = self.presenter.command_pool_sets[image_index].graphics;
         logical_device.reset_command_pool(command_pool, vk::CommandPoolResetFlags::empty())?;
@@ -328,7 +328,7 @@ impl RenderEngine {
 
         let color_clear_value = vk::ClearValue {
             color: vk::ClearColorValue {
-                float32: [0.0, 0.0, 0.0, 1.0],
+                float32: [0.0, 0.0, 0.8, 1.0],
             },
         };
 
@@ -348,65 +348,7 @@ impl RenderEngine {
 
         logical_device.cmd_begin_render_pass(command_buffer, &info, vk::SubpassContents::INLINE);
 
-        // let secondary_command_buffers = (0..4)
-        //     .map(|i| {
-        //         self.update_secondary_command_buffer(
-        //             logical_device,
-        //             image_index,
-        //             i,
-        //             if i % 3 == 0 { "sphere" } else { "room" },
-        //         )
-        //     })
-        //     .collect::<Result<Vec<_>, _>>()?;
-
-        // let secondary_command_buffers = self
-        //     .model_manager
-        //     .models
-        //     .values_mut()
-        //     .enumerate()
-        //     .map(|(index, model)| {
-        //         model.make_command_buffer(
-        //             logical_device,
-        //             image_index,
-        //             index,
-        //             &mut self.presenter.secondary_command_buffers[image_index],
-        //             &self.presenter.command_pool_sets,
-        //             &self.pipeline,
-        //             &self.presenter.framebuffers,
-        //             &self.presenter.descriptor_sets,
-        //             self.start,
-        //         )
-        //     })
-        //     .collect::<Result<Vec<_>>>()?;
-
-        // logical_device.cmd_execute_commands(command_buffer, &secondary_command_buffers[..]);
-
-        logical_device.cmd_bind_pipeline(
-            command_buffer,
-            vk::PipelineBindPoint::GRAPHICS,
-            self.pipeline.pipeline,
-        );
-
-        logical_device.cmd_bind_descriptor_sets(
-            command_buffer,
-            vk::PipelineBindPoint::GRAPHICS,
-            self.pipeline.pipeline_layout,
-            0,
-            &[self.presenter.descriptor_sets[image_index]],
-            &[],
-        );
-
-        for (model_index, model) in self.model_manager.models.values_mut().enumerate() {
-            model.push_constants(
-                logical_device,
-                command_buffer,
-                &self.pipeline,
-                self.start,
-                model_index,
-            );
-
-            model.draw_model(logical_device, command_buffer)?
-        }
+        scene.draw_models(image_index, model_manager, logical_device, command_buffer)?;
 
         logical_device.cmd_end_render_pass(command_buffer);
 
@@ -414,124 +356,124 @@ impl RenderEngine {
         Ok(())
     }
 
-    unsafe fn update_secondary_command_buffer(
-        &mut self,
-        logical_device: &Device,
-        image_index: usize,
-        model_index: usize,
-        model_name: &str,
-    ) -> Result<vk::CommandBuffer> {
-        let command_buffers = &mut self.presenter.secondary_command_buffers[image_index];
-        while model_index >= command_buffers.len() {
-            println!("Allocating new secondary command buffer");
-            let allocate_info = vk::CommandBufferAllocateInfo::builder()
-                .command_pool(self.presenter.command_pool_sets[image_index].graphics)
-                .level(vk::CommandBufferLevel::SECONDARY)
-                .command_buffer_count(1);
+    // unsafe fn update_secondary_command_buffer(
+    //     &mut self,
+    //     logical_device: &Device,
+    //     image_index: usize,
+    //     model_index: usize,
+    //     model_name: &str,
+    // ) -> Result<vk::CommandBuffer> {
+    //     let command_buffers = &mut self.presenter.secondary_command_buffers[image_index];
+    //     while model_index >= command_buffers.len() {
+    //         println!("Allocating new secondary command buffer");
+    //         let allocate_info = vk::CommandBufferAllocateInfo::builder()
+    //             .command_pool(self.presenter.command_pool_sets[image_index].graphics)
+    //             .level(vk::CommandBufferLevel::SECONDARY)
+    //             .command_buffer_count(1);
 
-            let command_buffer = logical_device.allocate_command_buffers(&allocate_info)?[0];
-            command_buffers.push(command_buffer);
-        }
+    //         let command_buffer = logical_device.allocate_command_buffers(&allocate_info)?[0];
+    //         command_buffers.push(command_buffer);
+    //     }
 
-        let command_buffer = command_buffers[model_index];
+    //     let command_buffer = command_buffers[model_index];
 
-        let inheritance_info = vk::CommandBufferInheritanceInfo::builder()
-            .render_pass(self.pipeline.render_pass)
-            .subpass(0)
-            .framebuffer(self.presenter.framebuffers[image_index]);
+    //     let inheritance_info = vk::CommandBufferInheritanceInfo::builder()
+    //         .render_pass(self.pipeline.render_pass)
+    //         .subpass(0)
+    //         .framebuffer(self.presenter.framebuffers[image_index]);
 
-        let info = vk::CommandBufferBeginInfo::builder()
-            .flags(vk::CommandBufferUsageFlags::RENDER_PASS_CONTINUE)
-            .inheritance_info(&inheritance_info);
+    //     let info = vk::CommandBufferBeginInfo::builder()
+    //         .flags(vk::CommandBufferUsageFlags::RENDER_PASS_CONTINUE)
+    //         .inheritance_info(&inheritance_info);
 
-        logical_device.begin_command_buffer(command_buffer, &info)?;
+    //     logical_device.begin_command_buffer(command_buffer, &info)?;
 
-        let time = self.start.elapsed().as_secs_f32();
+    //     let time = self.start.elapsed().as_secs_f32();
 
-        let y = (((model_index % 2) as f32) * 2.5) - 1.25;
-        let z = (((model_index / 2) as f32) * -2.0) + 1.0;
+    //     let y = (((model_index % 2) as f32) * 2.5) - 1.25;
+    //     let z = (((model_index / 2) as f32) * -2.0) + 1.0;
 
-        logical_device.cmd_bind_pipeline(
-            command_buffer,
-            vk::PipelineBindPoint::GRAPHICS,
-            self.pipeline.pipeline,
-        );
+    //     logical_device.cmd_bind_pipeline(
+    //         command_buffer,
+    //         vk::PipelineBindPoint::GRAPHICS,
+    //         self.pipeline.pipeline,
+    //     );
 
-        logical_device.cmd_bind_descriptor_sets(
-            command_buffer,
-            vk::PipelineBindPoint::GRAPHICS,
-            self.pipeline.pipeline_layout,
-            0,
-            &[self.presenter.descriptor_sets[image_index]],
-            &[],
-        );
+    //     logical_device.cmd_bind_descriptor_sets(
+    //         command_buffer,
+    //         vk::PipelineBindPoint::GRAPHICS,
+    //         self.pipeline.pipeline_layout,
+    //         0,
+    //         &[self.presenter.descriptor_sets[image_index]],
+    //         &[],
+    //     );
 
-        // for (_name, model) in self.model_manager.models.iter() {
-        let model = self.model_manager.models.get_mut(model_name).unwrap();
-        model.set_position(g_types::vec3(0.0, y, z));
+    //     // for (_name, model) in self.model_manager.models.iter() {
+    //     let model = model_manager.models.get_mut(model_name).unwrap();
+    //     model.set_position(g_types::vec3(0.0, y, z));
 
-        logical_device.cmd_bind_vertex_buffers(
-            command_buffer,
-            0,
-            &[model.vertex_buffer.get_buffer()],
-            &[0],
-        );
+    //     logical_device.cmd_bind_vertex_buffers(
+    //         command_buffer,
+    //         0,
+    //         &[model.vertex_buffer.get_buffer()],
+    //         &[0],
+    //     );
 
-        logical_device.cmd_bind_index_buffer(
-            command_buffer,
-            model.index_buffer.get_buffer(),
-            0,
-            vk::IndexType::UINT32,
-        );
+    //     logical_device.cmd_bind_index_buffer(
+    //         command_buffer,
+    //         model.index_buffer.get_buffer(),
+    //         0,
+    //         vk::IndexType::UINT32,
+    //     );
 
-        let model_mat = g_types::Mat4::from_translation(model.position)
-            * g_types::Mat4::from_axis_angle(
-                g_types::vec3(0.0, 0.0, 1.0),
-                g_types::Deg(90.0) * time,
-            );
-        let model_bytes = std::slice::from_raw_parts(
-            &model_mat as *const g_types::Mat4 as *const u8,
-            size_of::<g_types::Mat4>(),
-        );
+    //     let model_mat = g_types::Mat4::from_translation(model.position)
+    //         * g_types::Mat4::from_axis_angle(
+    //             g_types::vec3(0.0, 0.0, 1.0),
+    //             g_types::Deg(90.0) * time,
+    //         );
+    //     let model_bytes = std::slice::from_raw_parts(
+    //         &model_mat as *const g_types::Mat4 as *const u8,
+    //         size_of::<g_types::Mat4>(),
+    //     );
 
-        logical_device.cmd_push_constants(
-            command_buffer,
-            self.pipeline.pipeline_layout,
-            vk::ShaderStageFlags::VERTEX,
-            0,
-            model_bytes,
-        );
+    //     logical_device.cmd_push_constants(
+    //         command_buffer,
+    //         self.pipeline.pipeline_layout,
+    //         vk::ShaderStageFlags::VERTEX,
+    //         0,
+    //         model_bytes,
+    //     );
 
-        logical_device.cmd_push_constants(
-            command_buffer,
-            self.pipeline.pipeline_layout,
-            vk::ShaderStageFlags::FRAGMENT,
-            64,
-            &[
-                (model_index % 2).to_ne_bytes(),
-                (model_index % 2).to_ne_bytes(),
-            ]
-            .concat(),
-        );
+    //     logical_device.cmd_push_constants(
+    //         command_buffer,
+    //         self.pipeline.pipeline_layout,
+    //         vk::ShaderStageFlags::FRAGMENT,
+    //         64,
+    //         &[
+    //             (model_index % 2).to_ne_bytes(),
+    //             (model_index % 2).to_ne_bytes(),
+    //         ]
+    //         .concat(),
+    //     );
 
-        logical_device.cmd_draw_indexed(
-            command_buffer,
-            model.index_buffer.get_indice_count(),
-            1,
-            0,
-            0,
-            0,
-        );
-        // }
+    //     logical_device.cmd_draw_indexed(
+    //         command_buffer,
+    //         model.index_buffer.get_indice_count(),
+    //         1,
+    //         0,
+    //         0,
+    //         0,
+    //     );
+    //     // }
 
-        logical_device.end_command_buffer(command_buffer)?;
+    //     logical_device.end_command_buffer(command_buffer)?;
 
-        Ok(command_buffer)
-    }
+    //     Ok(command_buffer)
+    // }
 
     pub unsafe fn destroy(&mut self, logical_device: &Device, instance: &Instance) {
-        self.model_manager.destroy(logical_device);
-        self.texture_engine.destroy(logical_device);
+        // self.model_manager.destroy(logical_device);
+        // self.texture_engine.destroy(logical_device);
         self.presenter.destroy(logical_device);
         self.pipeline.destroy(logical_device);
         self.swapchain.destroy(logical_device);

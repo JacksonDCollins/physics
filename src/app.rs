@@ -18,9 +18,11 @@ pub struct App {
     dbg_messenger: Option<vk::DebugUtilsMessengerEXT>,
     render_engine: graphics::engine::RenderEngine,
     pub input_engine: input::engine::InputEngine,
+    model_manager: graphics::objects::ModelManager,
     camera: controller::camera::Camera,
     frame: usize,
     pub resized: bool,
+    scene: graphics::objects::Scene,
 }
 
 impl App {
@@ -39,6 +41,19 @@ impl App {
             queue_family_indices,
         )?;
 
+        let mut model_manager = graphics::objects::ModelManager::create()?;
+
+        // let texture = g_objects::Texture::create("resources/viking_room.png")?;
+
+        // let texture2 = g_objects::Texture::create("resources/texture.png")?;
+
+        // texture_engine.add_texture(texture);
+        // texture_engine.add_texture(texture2);
+
+        let scene = graphics::objects::Scene::create()?;
+
+        model_manager.load_models_from_scene(&scene, &logical_device)?;
+
         let render_engine = graphics::engine::RenderEngine::create(
             window,
             &instance,
@@ -49,6 +64,7 @@ impl App {
             queue_family_indices,
             swapchain_support,
             msaa_samples,
+            &mut model_manager,
         )?;
 
         let input_engine = input::engine::InputEngine::create();
@@ -63,9 +79,11 @@ impl App {
             dbg_messenger,
             render_engine,
             input_engine,
+            model_manager,
             camera,
             frame: 0,
             resized: false,
+            scene,
         })
     }
 
@@ -78,6 +96,8 @@ impl App {
             self.frame,
             &mut self.resized,
             &self.camera,
+            &self.scene,
+            &mut self.model_manager,
         )?;
 
         self.frame = (self.frame + 1) % g_utils::MAX_FRAMES_IN_FLIGHT;
@@ -106,6 +126,8 @@ impl App {
             .map_err(|e| anyhow!("{}", e))
     }
     pub unsafe fn destroy(&mut self) {
+        self.model_manager.destroy(&self.logical_device);
+
         self.render_engine
             .destroy(&self.logical_device, &self.instance);
 

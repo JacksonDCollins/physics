@@ -29,15 +29,15 @@ pub type Point3 = cgmath::Point3<f32>;
 #[derive(Copy, Clone, Debug, Serialize)]
 pub struct Vertex {
     pos: Vec3,
-    color: Vec3,
+    normal: Vec3,
     tex_coord: Vec2,
 }
 
 impl Vertex {
-    pub const fn new(pos: Vec3, color: Vec3, tex_coord: Vec2) -> Self {
+    pub const fn new(pos: Vec3, normal: Vec3, tex_coord: Vec2) -> Self {
         Self {
             pos,
-            color,
+            normal,
             tex_coord,
         }
     }
@@ -75,7 +75,7 @@ impl Vertex {
 
 impl PartialEq for Vertex {
     fn eq(&self, other: &Self) -> bool {
-        self.pos == other.pos && self.color == other.color && self.tex_coord == other.tex_coord
+        self.pos == other.pos && self.normal == other.normal && self.tex_coord == other.tex_coord
     }
 }
 
@@ -86,9 +86,9 @@ impl Hash for Vertex {
         self.pos[0].to_bits().hash(state);
         self.pos[1].to_bits().hash(state);
         self.pos[2].to_bits().hash(state);
-        self.color[0].to_bits().hash(state);
-        self.color[1].to_bits().hash(state);
-        self.color[2].to_bits().hash(state);
+        self.normal[0].to_bits().hash(state);
+        self.normal[1].to_bits().hash(state);
+        self.normal[2].to_bits().hash(state);
         self.tex_coord[0].to_bits().hash(state);
         self.tex_coord[1].to_bits().hash(state);
     }

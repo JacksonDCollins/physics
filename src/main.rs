@@ -50,6 +50,21 @@ fn main() -> Result<()> {
             } => {
                 app.window_input(&window_event);
                 match window_event {
+                    WindowEvent::KeyboardInput {
+                        input:
+                            KeyboardInput {
+                                virtual_keycode: Some(VirtualKeyCode::Escape),
+                                ..
+                            },
+                        ..
+                    } => {
+                        destroying = true;
+                        *control_flow = ControlFlow::Exit;
+                        unsafe {
+                            app.device_wait_idle().unwrap();
+                            app.destroy();
+                        }
+                    }
                     WindowEvent::CloseRequested => {
                         destroying = true;
                         *control_flow = ControlFlow::Exit;

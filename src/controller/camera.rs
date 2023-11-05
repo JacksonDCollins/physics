@@ -20,7 +20,7 @@ pub struct Camera {
 impl Camera {
     pub fn create() -> Self {
         Self {
-            eye: g_types::point3(0.0, 0.0, 0.0),
+            eye: g_types::point3(0.0, 0.0, 10.0),
             facing: Vec3::unit_x(),
             up: Vec3::unit_y(),
             right: Vec3::unit_z(),

@@ -42,12 +42,14 @@ impl Vertex {
         }
     }
 
-    pub fn binding_description() -> vk::VertexInputBindingDescription {
-        vk::VertexInputBindingDescription::builder()
+    pub fn binding_description(
+        input_rate: vk::VertexInputRate,
+    ) -> Vec<vk::VertexInputBindingDescription> {
+        vec![vk::VertexInputBindingDescription::builder()
             .binding(0)
             .stride(size_of::<Vertex>() as u32)
-            .input_rate(vk::VertexInputRate::VERTEX)
-            .build()
+            .input_rate(input_rate)
+            .build()]
     }
 
     pub fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; 3] {

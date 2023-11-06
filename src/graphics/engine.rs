@@ -350,6 +350,8 @@ impl RenderEngine {
 
         scene.draw_models(image_index, model_manager, logical_device, command_buffer)?;
 
+        scene.draw_instanced_models(image_index, model_manager, logical_device, command_buffer)?;
+
         logical_device.cmd_end_render_pass(command_buffer);
 
         logical_device.end_command_buffer(command_buffer)?;

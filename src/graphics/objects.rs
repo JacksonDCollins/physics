@@ -7,7 +7,7 @@ use std::os::raw::c_void;
 
 use crate::graphics::types as g_types;
 use crate::graphics::utils as g_utils;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 
 use rand::distributions::uniform;
 use vulkanalia::prelude::v1_2::*;
@@ -77,20 +77,6 @@ impl Pipeline {
         msaa_samples: vk::SampleCountFlags,
         // model_manager: &mut ModelManager,
     ) -> Result<Self> {
-        // let descriptor_set_layout = g_utils::create_descriptor_set_layout(logical_device, 1, 1)?;
-
-        // let descriptor_pool =
-        //     g_utils::create_descriptor_pool(logical_device, swapchain.images.len() as u32, 1, 1)?;
-
-        // let (pipeline_layout, render_pass, pipeline) = g_utils::create_pipeline_and_renderpass(
-        //     instance,
-        //     logical_device,
-        //     physical_device,
-        //     swapchain,
-        //     descriptor_set_layout,
-        //     msaa_samples,
-        // )?;
-
         let render_pass = g_utils::create_render_pass(
             instance,
             logical_device,
@@ -278,6 +264,67 @@ impl Presenter {
 }
 
 #[derive(Debug)]
+pub struct InstanceBuffer {
+    pub buffer: vk::Buffer,
+    pub size: Option<u64>,
+    pub offset: Option<u64>,
+    pub changed: bool,
+    pub reqs: Option<vk::MemoryRequirements>,
+    pub positions: Vec<g_types::Vec3>,
+}
+
+impl InstanceBuffer {
+    pub unsafe fn create(positions: &[g_types::Vec3]) -> Result<Self> {
+        let size = std::mem::size_of_val(positions) as u64;
+
+        let models = positions
+            .iter()
+            .map(|position| g_types::Mat4::from_translation(*position))
+            .collect::<Vec<_>>();
+
+        Ok(Self {
+            buffer: vk::Buffer::null(), //vertex_buffer,
+            size: Some(size),
+            offset: None,
+            changed: false,
+            reqs: None,
+            positions: positions.to_vec(),
+        })
+    }
+
+    pub fn get_required_size(&self) -> u64 {
+        g_utils::align_up(self.reqs.unwrap().size, self.reqs.unwrap().alignment)
+    }
+
+    pub fn get_buffer(&self) -> vk::Buffer {
+        self.buffer
+    }
+
+    pub fn get_size(&self) -> u64 {
+        self.size.unwrap()
+    }
+
+    pub unsafe fn destroy(&mut self, logical_device: &Device) {
+        logical_device.destroy_buffer(self.buffer, None);
+        self.changed = true;
+    }
+
+    pub unsafe fn create_buffer(&mut self, logical_device: &Device) -> Result<()> {
+        if self.buffer.is_null() {
+            self.buffer = g_utils::create_buffer(
+                logical_device,
+                self.size.unwrap(),
+                vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::STORAGE_BUFFER,
+            )?;
+
+            self.reqs = Some(logical_device.get_buffer_memory_requirements(self.buffer));
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
 pub struct VertexBuffer {
     buffer: vk::Buffer,
     vertices: Vec<g_types::Vertex>,
@@ -301,6 +348,9 @@ impl VertexBuffer {
         })
     }
 
+    pub fn get_required_size(&self) -> u64 {
+        g_utils::align_up(self.reqs.unwrap().size, self.reqs.unwrap().alignment)
+    }
     pub fn get_buffer(&self) -> vk::Buffer {
         self.buffer
     }
@@ -403,6 +453,10 @@ impl IndexBuffer {
             changed: false,
             reqs: None,
         })
+    }
+
+    pub fn get_required_size(&self) -> u64 {
+        g_utils::align_up(self.reqs.unwrap().size, self.reqs.unwrap().alignment)
     }
 
     pub fn get_buffer(&self) -> vk::Buffer {
@@ -525,47 +579,20 @@ impl BufferMemoryAllocator {
         Ok(())
     }
 
-    pub unsafe fn allocate_memory(
+    pub unsafe fn create_memories(
         &mut self,
         instance: &Instance,
         logical_device: &Device,
         physical_device: vk::PhysicalDevice,
-        queue_set: &g_utils::QueueSet,
-        command_pool_set: g_types::CommandPoolSet,
-        models: &mut HashMap<String, Model>,
+        size: u64,
     ) -> Result<()> {
-        // self.check_for_changes();
-        if !self.changed {
-            return Ok(());
-        }
-        // self.reset_changes();
-        self.changed = false;
-
-        let vertex_size = models
-            .values()
-            .map(|model| &model.vertex_buffer)
-            .filter(|buffer| buffer.size.is_some())
-            .fold(0, |acc, buffer| {
-                acc + g_utils::align_up(buffer.reqs.unwrap().size, buffer.reqs.unwrap().alignment)
-            });
-
-        let index_size = models
-            .values()
-            .map(|model| &model.index_buffer)
-            .filter(|buffer| buffer.size.is_some())
-            .fold(0, |acc, buffer| {
-                acc + g_utils::align_up(buffer.reqs.unwrap().size, buffer.reqs.unwrap().alignment)
-            });
-
-        let vertex_index_size = vertex_size + index_size;
-
         if self.stage_memory_ptr.is_null() {
             let (staging_buffer, staging_buffer_memory, memory_ptr) =
                 Self::create_and_map_staging_buffer_and_memory(
                     instance,
                     logical_device,
                     physical_device,
-                    vertex_index_size * 2,
+                    size,
                 )?;
             self.staging_buffer = staging_buffer;
             self.staging_memory = staging_buffer_memory;
@@ -595,16 +622,54 @@ impl BufferMemoryAllocator {
             self.uniform_memory_ptr = memory_ptr;
         }
 
+        if self.vertex_index_memory.is_null() {
+            (self.vertex_index_buffer, self.vertex_index_memory, _) =
+                g_utils::create_buffer_and_memory(
+                    instance,
+                    logical_device,
+                    physical_device,
+                    size * 4,
+                    vk::BufferUsageFlags::TRANSFER_DST
+                        | vk::BufferUsageFlags::VERTEX_BUFFER
+                        | vk::BufferUsageFlags::INDEX_BUFFER,
+                    vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                )?;
+        }
+        Ok(())
+    }
+
+    pub unsafe fn allocate_memory(
+        &mut self,
+        instance: &Instance,
+        logical_device: &Device,
+        physical_device: vk::PhysicalDevice,
+        queue_set: &g_utils::QueueSet,
+        command_pool_set: g_types::CommandPoolSet,
+        models: &mut [&mut impl HasBuffers], //Vec<&mut &dyn HasBuffers>, //&mut HashMap<&String, &mut Model>,
+        instanced_models: &mut [&mut impl HasBuffers],
+        size: u64,
+    ) -> Result<()> {
+        // self.check_for_changes();
+        if !self.changed {
+            return Ok(());
+        }
+        // self.reset_changes();
+        self.changed = false;
+
         let mut offset = 0;
         models
-            .values_mut()
-            .map(|model| &mut model.vertex_buffer)
+            .iter_mut()
+            .filter_map(|model| model.get_vertex_buffer_mut())
+            .chain(
+                instanced_models
+                    .iter_mut()
+                    .filter_map(|model| model.get_vertex_buffer_mut()),
+            )
             .filter(|buffer| buffer.size.is_some())
             .for_each(|buffer| {
-                let alignment = logical_device
-                    .get_buffer_memory_requirements(buffer.buffer)
-                    .alignment;
-                offset = g_utils::align_up(offset, alignment);
+                println!("buffer {:?}", buffer.buffer);
+
+                offset = g_utils::align_up(offset, buffer.reqs.unwrap().alignment);
                 let dst = self.stage_memory_ptr.add(offset as usize).cast();
                 g_utils::memcpy(buffer.vertices.as_ptr(), dst, buffer.vertices.len());
                 buffer.offset = Some(offset);
@@ -612,31 +677,42 @@ impl BufferMemoryAllocator {
             });
 
         models
-            .values_mut()
-            .map(|model| &mut model.index_buffer)
+            .iter_mut()
+            .filter_map(|model| model.get_index_buffer_mut())
+            .chain(
+                instanced_models
+                    .iter_mut()
+                    .filter_map(|model| model.get_index_buffer_mut()),
+            )
             .filter(|buffer| buffer.size.is_some())
-            .for_each(|buffer: &mut IndexBuffer| {
-                let alignment = logical_device
-                    .get_buffer_memory_requirements(buffer.buffer)
-                    .alignment;
-                offset = g_utils::align_up(offset, alignment);
+            .for_each(|buffer| {
+                println!("buffer {:?}", buffer.buffer);
+
+                offset = g_utils::align_up(offset, buffer.reqs.unwrap().alignment);
                 let dst = self.stage_memory_ptr.add(offset as usize).cast();
                 g_utils::memcpy(buffer.indices.as_ptr(), dst, buffer.indices.len());
                 buffer.offset = Some(offset);
                 offset += buffer.size.unwrap();
             });
 
-        (self.vertex_index_buffer, self.vertex_index_memory, _) =
-            g_utils::create_buffer_and_memory(
-                instance,
-                logical_device,
-                physical_device,
-                vertex_index_size * 4,
-                vk::BufferUsageFlags::TRANSFER_DST
-                    | vk::BufferUsageFlags::VERTEX_BUFFER
-                    | vk::BufferUsageFlags::INDEX_BUFFER,
-                vk::MemoryPropertyFlags::DEVICE_LOCAL,
-            )?;
+        models
+            .iter_mut()
+            .filter_map(|model| model.get_instance_buffer_mut())
+            .chain(
+                instanced_models
+                    .iter_mut()
+                    .filter_map(|model| model.get_instance_buffer_mut()),
+            )
+            .filter(|buffer| buffer.size.is_some())
+            .for_each(|buffer| {
+                println!("buffer {:?}", buffer.buffer);
+
+                offset = g_utils::align_up(offset, buffer.reqs.unwrap().alignment);
+                let dst = self.stage_memory_ptr.add(offset as usize).cast();
+                g_utils::memcpy(buffer.positions.as_ptr(), dst, buffer.positions.len());
+                buffer.offset = Some(offset);
+                offset += buffer.size.unwrap();
+            });
 
         g_utils::copy_buffer(
             logical_device,
@@ -644,14 +720,19 @@ impl BufferMemoryAllocator {
             command_pool_set.transfer,
             self.staging_buffer,
             self.vertex_index_buffer,
-            vertex_index_size,
+            size,
             0,
             0,
         )?;
 
         for buffer in models
-            .values()
-            .map(|model| &model.vertex_buffer)
+            .iter()
+            .filter_map(|model| model.get_vertex_buffer())
+            .chain(
+                instanced_models
+                    .iter()
+                    .filter_map(|model| model.get_vertex_buffer()),
+            )
             .filter(|buffer| buffer.offset.is_some())
         {
             logical_device.bind_buffer_memory(
@@ -662,8 +743,30 @@ impl BufferMemoryAllocator {
         }
 
         for buffer in models
-            .values()
-            .map(|model| &model.index_buffer)
+            .iter()
+            .filter_map(|model| model.get_index_buffer())
+            .chain(
+                instanced_models
+                    .iter()
+                    .filter_map(|model| model.get_index_buffer()),
+            )
+            .filter(|buffer| buffer.offset.is_some())
+        {
+            logical_device.bind_buffer_memory(
+                buffer.buffer,
+                self.vertex_index_memory,
+                buffer.offset.unwrap(),
+            )?;
+        }
+
+        for buffer in instanced_models
+            .iter()
+            .filter_map(|model| model.get_instance_buffer())
+            .chain(
+                models
+                    .iter()
+                    .filter_map(|model| model.get_instance_buffer()),
+            )
             .filter(|buffer| buffer.offset.is_some())
         {
             logical_device.bind_buffer_memory(
@@ -736,6 +839,30 @@ impl BufferMemoryAllocator {
         for buffer in self.uniform_buffers_to_allocate.iter_mut() {
             buffer.create_buffer(logical_device)?;
         }
+
+        Ok(())
+    }
+
+    pub unsafe fn create_instanced_buffers(
+        &mut self,
+        logical_device: &Device,
+        instanced_models: &mut HashMap<String, InstancedModel>,
+    ) -> Result<()> {
+        for instanced_model in instanced_models.values_mut() {
+            instanced_model
+                .instance_buffer
+                .create_buffer(logical_device)?;
+
+            instanced_model
+                .vertex_buffer
+                .create_buffer(logical_device)?;
+            instanced_model.index_buffer.create_buffer(logical_device)?;
+        }
+
+        for buffer in self.uniform_buffers_to_allocate.iter_mut() {
+            buffer.create_buffer(logical_device)?;
+        }
+
         Ok(())
     }
 }
@@ -787,9 +914,16 @@ impl TextureMemoryAllocator {
         instance: &Instance,
         logical_device: &Device,
         physical_device: vk::PhysicalDevice,
-        models: &mut HashMap<String, Model>,
+        models: &mut HashMap<&String, &mut Model>,
+        instanced_models: &mut HashMap<&String, &mut InstancedModel>,
     ) -> Result<()> {
         for model in models.values_mut() {
+            model
+                .texture
+                .create_image_objects(instance, logical_device, physical_device)?;
+        }
+
+        for model in instanced_models.values_mut() {
             model
                 .texture
                 .create_image_objects(instance, logical_device, physical_device)?;
@@ -820,7 +954,8 @@ impl TextureMemoryAllocator {
         physical_device: vk::PhysicalDevice,
         queue_set: &g_utils::QueueSet,
         command_pool_set: &g_types::CommandPoolSet,
-        models: &mut HashMap<String, Model>,
+        models: &mut HashMap<&String, &mut Model>,
+        instanced_models: &mut HashMap<&String, &mut InstancedModel>,
     ) -> Result<()> {
         // self.check_for_changes();
         if !self.changed {
@@ -832,9 +967,19 @@ impl TextureMemoryAllocator {
         let memory_type_indexes = models
             .values()
             .map(|model| model.texture.memory_type_index)
+            .chain(
+                instanced_models
+                    .values()
+                    .map(|model| model.texture.memory_type_index),
+            )
             .collect::<HashSet<_>>();
 
         let total_size = models.values().fold(0, |acc, model| {
+            acc + g_utils::align_up(
+                model.texture.reqs.unwrap().size,
+                model.texture.reqs.unwrap().alignment,
+            )
+        }) + instanced_models.values().fold(0, |acc, model| {
             acc + g_utils::align_up(
                 model.texture.reqs.unwrap().size,
                 model.texture.reqs.unwrap().alignment,
@@ -863,10 +1008,31 @@ impl TextureMemoryAllocator {
                         model.texture.reqs.unwrap().size,
                         model.texture.reqs.unwrap().alignment,
                     )
+                })
+                + instanced_models.values().fold(0, |acc, model| {
+                    acc + g_utils::align_up(
+                        model.texture.reqs.unwrap().size,
+                        model.texture.reqs.unwrap().alignment,
+                    )
                 });
 
             let mut offset = 0;
             models
+                .values_mut()
+                .filter(|model| model.texture.memory_type_index == memory_type_index)
+                .for_each(|model| {
+                    offset = g_utils::align_up(offset, model.texture.reqs.unwrap().alignment);
+                    let dst = self.staging_memory_ptr.add(offset as usize).cast();
+                    g_utils::memcpy(
+                        model.texture.pixels.as_ptr(),
+                        dst,
+                        model.texture.pixels.len(),
+                    );
+                    model.texture.offset = Some(offset);
+                    offset += model.texture.reqs.unwrap().size;
+                });
+
+            instanced_models
                 .values_mut()
                 .filter(|model| model.texture.memory_type_index == memory_type_index)
                 .for_each(|model| {
@@ -944,6 +1110,61 @@ impl TextureMemoryAllocator {
                     model.texture.format,
                 )?;
             }
+
+            for model in instanced_models.values_mut().filter(|model| {
+                model.texture.memory_type_index == memory_type_index
+                    && model.texture.offset.is_some()
+            }) {
+                logical_device.bind_image_memory(
+                    model.texture.image,
+                    *self.texture_memorys.get(&memory_type_index).unwrap(),
+                    model.texture.offset.unwrap(),
+                )?;
+
+                g_utils::transition_image_layout(
+                    logical_device,
+                    command_pool_set.graphics,
+                    queue_set.graphics,
+                    model.texture.image,
+                    model.texture.mip_levels,
+                    model.texture.format,
+                    vk::ImageLayout::UNDEFINED,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    vk::QUEUE_FAMILY_IGNORED,
+                    vk::QUEUE_FAMILY_IGNORED,
+                )?;
+
+                g_utils::copy_buffer_to_image(
+                    logical_device,
+                    command_pool_set.graphics,
+                    queue_set.graphics,
+                    self.staging_buffer,
+                    model.texture.image,
+                    model.texture.width,
+                    model.texture.height,
+                    model.texture.offset.unwrap(),
+                )?;
+
+                g_utils::generate_mipmaps(
+                    instance,
+                    logical_device,
+                    physical_device,
+                    command_pool_set.graphics,
+                    queue_set.graphics,
+                    model.texture.image,
+                    model.texture.format,
+                    model.texture.width,
+                    model.texture.height,
+                    model.texture.mip_levels,
+                )?;
+
+                model.texture.image_view = g_utils::create_texture_image_view(
+                    logical_device,
+                    model.texture.image,
+                    model.texture.mip_levels,
+                    model.texture.format,
+                )?;
+            }
         }
         Ok(())
     }
@@ -960,6 +1181,7 @@ impl TextureMemoryAllocator {
     }
 }
 
+#[derive(Debug)]
 pub struct Texture {
     pub image: vk::Image,
     pub sampler: vk::Sampler,
@@ -1060,6 +1282,310 @@ impl Texture {
     }
 }
 
+#[derive(Debug)]
+pub struct InstancedModel {
+    // pub model: Model,
+    pub vertex_buffer: VertexBuffer,
+    pub index_buffer: IndexBuffer,
+    pub descriptor_set_layout: vk::DescriptorSetLayout,
+    pub pipeline_layout: vk::PipelineLayout,
+    pub pipeline: vk::Pipeline,
+    pub descriptor_pool: vk::DescriptorPool,
+    pub descriptor_sets: Vec<vk::DescriptorSet>,
+    pub texture: Texture,
+    pub instance_buffer: InstanceBuffer,
+    instance_count: u32,
+}
+
+impl HasBuffers for InstancedModel {
+    fn get_index_buffer(&self) -> Option<&IndexBuffer> {
+        Some(&self.index_buffer)
+    }
+
+    fn get_vertex_buffer(&self) -> Option<&VertexBuffer> {
+        Some(&self.vertex_buffer)
+    }
+
+    fn get_vertex_buffer_mut(&mut self) -> Option<&mut VertexBuffer> {
+        Some(&mut self.vertex_buffer)
+    }
+
+    fn get_index_buffer_mut(&mut self) -> Option<&mut IndexBuffer> {
+        Some(&mut self.index_buffer)
+    }
+
+    fn get_instance_buffer(&self) -> Option<&InstanceBuffer> {
+        Some(&self.instance_buffer)
+    }
+
+    fn get_instance_buffer_mut(&mut self) -> Option<&mut InstanceBuffer> {
+        Some(&mut self.instance_buffer)
+    }
+}
+
+impl InstancedModel {
+    pub unsafe fn create(
+        path: &str,
+        texture_path: &str,
+        logical_device: &Device,
+        positions: &[g_types::Vec3],
+    ) -> Result<Self> {
+        // let model = Model::create(path, texture_path, logical_device)?;
+        let (vertices, indices) = g_utils::load_model(path)?;
+
+        let vertex_buffer = VertexBuffer::create(&vertices)?;
+
+        let index_buffer = IndexBuffer::create(&indices)?;
+
+        let texture = Texture::create(texture_path)?;
+
+        let descriptor_set_layout = Self::create_descriptor_set_layout(logical_device, 1)?;
+
+        let pipeline_layout =
+            g_utils::create_pipeline_layout(logical_device, descriptor_set_layout)?;
+
+        let pipeline = vk::Pipeline::null();
+
+        let descriptor_pool = vk::DescriptorPool::null();
+        let descriptor_sets = Vec::new();
+
+        let instance_buffer = InstanceBuffer::create(positions)?;
+        Ok(Self {
+            vertex_buffer,
+            index_buffer,
+            descriptor_set_layout,
+            pipeline_layout,
+            pipeline,
+            texture,
+            descriptor_pool,
+            descriptor_sets,
+            instance_buffer,
+            instance_count: positions.len() as u32,
+        })
+    }
+
+    pub unsafe fn create_descriptor_set_layout(
+        logical_device: &Device,
+        texture_count: u32,
+    ) -> Result<vk::DescriptorSetLayout> {
+        let ubo_binding = vk::DescriptorSetLayoutBinding::builder()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::VERTEX);
+
+        let render_parameters_binding = vk::DescriptorSetLayoutBinding::builder()
+            .binding(2)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER_DYNAMIC)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::VERTEX);
+
+        let sampler_binding = vk::DescriptorSetLayoutBinding::builder()
+            .binding(1)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(texture_count)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+
+        let bindings = &[ubo_binding, render_parameters_binding, sampler_binding];
+        let info = vk::DescriptorSetLayoutCreateInfo::builder().bindings(bindings);
+
+        logical_device
+            .create_descriptor_set_layout(&info, None)
+            .map_err(|e| anyhow!("{}", e))
+    }
+
+    pub unsafe fn create_descriptor_pool_and_sets(
+        &mut self,
+        logical_device: &Device,
+        swapchain_images_count: usize,
+    ) -> Result<()> {
+        self.descriptor_pool =
+            Self::create_descriptor_pool(logical_device, swapchain_images_count as u32, 1)?;
+
+        self.descriptor_sets = g_utils::create_descriptor_sets(
+            logical_device,
+            self.descriptor_set_layout,
+            self.descriptor_pool,
+            swapchain_images_count,
+        )?;
+
+        Ok(())
+    }
+
+    pub unsafe fn create_descriptor_pool(
+        logical_device: &Device,
+        swapchain_images_count: u32,
+        texture_count: u32,
+    ) -> Result<vk::DescriptorPool> {
+        let ubo_size = vk::DescriptorPoolSize::builder()
+            .type_(vk::DescriptorType::UNIFORM_BUFFER)
+            .descriptor_count(swapchain_images_count);
+
+        let sampler_size = vk::DescriptorPoolSize::builder()
+            .type_(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(swapchain_images_count * texture_count);
+
+        let render_params_size = vk::DescriptorPoolSize::builder()
+            .type_(vk::DescriptorType::STORAGE_BUFFER_DYNAMIC)
+            .descriptor_count(swapchain_images_count);
+
+        let pool_sizes = &[ubo_size, sampler_size, render_params_size];
+        let info = vk::DescriptorPoolCreateInfo::builder()
+            .pool_sizes(pool_sizes)
+            .max_sets(swapchain_images_count);
+
+        logical_device
+            .create_descriptor_pool(&info, None)
+            .map_err(|e| anyhow!("{}", e))
+    }
+    pub unsafe fn update_descriptor_sets(
+        &mut self,
+        logical_device: &Device,
+        swapchain_images_count: usize,
+        uniform_buffers: &[UniformBuffer],
+    ) -> Result<()> {
+        (0..swapchain_images_count).enumerate().for_each(|(i, _)| {
+            let buffer_info = &[vk::DescriptorBufferInfo::builder()
+                .buffer(uniform_buffers[i].get_buffer())
+                .offset(0)
+                .range(uniform_buffers[i].get_size())];
+
+            let ubo_write = vk::WriteDescriptorSet::builder()
+                .dst_set(self.descriptor_sets[i])
+                .dst_binding(0)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .buffer_info(buffer_info);
+
+            let buffer_info = &[vk::DescriptorBufferInfo::builder()
+                .buffer(self.instance_buffer.get_buffer())
+                .offset(0)
+                .range(self.instance_buffer.get_size())];
+
+            let render_params_write = vk::WriteDescriptorSet::builder()
+                .dst_set(self.descriptor_sets[i])
+                .dst_binding(2)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER_DYNAMIC)
+                .buffer_info(buffer_info);
+
+            let image_info = &[vk::DescriptorImageInfo::builder()
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .image_view(self.texture.image_view)
+                .sampler(self.texture.sampler)
+                .build()];
+
+            let image_info_write = vk::WriteDescriptorSet::builder()
+                .dst_set(self.descriptor_sets[i])
+                .dst_binding(1)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(image_info);
+
+            logical_device.update_descriptor_sets(
+                &[ubo_write, render_params_write, image_info_write],
+                &[] as &[vk::CopyDescriptorSet],
+            );
+        });
+
+        Ok(())
+    }
+
+    pub unsafe fn create_pipeline(
+        &mut self,
+        logical_device: &Device,
+        msaa_samples: vk::SampleCountFlags,
+        render_pass: vk::RenderPass,
+        extent: vk::Extent2D,
+    ) -> Result<()> {
+        let (vert, frag) = {
+            (
+                include_bytes!("../../shaders/instanced_vert.spv").to_vec(),
+                include_bytes!("../../shaders/instanced_frag.spv").to_vec(),
+            )
+        };
+
+        let vert_shader_module = g_utils::create_shader_module(logical_device, &vert[..])?;
+        let frag_shader_module = g_utils::create_shader_module(logical_device, &frag[..])?;
+        self.pipeline = g_utils::create_instanced_pipeline(
+            logical_device,
+            vert_shader_module,
+            frag_shader_module,
+            extent.width,
+            extent.height,
+            msaa_samples,
+            self.pipeline_layout,
+            render_pass,
+        )?;
+
+        logical_device.destroy_shader_module(vert_shader_module, None);
+        logical_device.destroy_shader_module(frag_shader_module, None);
+
+        Ok(())
+    }
+
+    pub unsafe fn draw_models(
+        &self,
+        logical_device: &Device,
+        command_buffer: vk::CommandBuffer,
+        image_index: usize,
+    ) -> Result<()> {
+        logical_device.cmd_bind_pipeline(
+            command_buffer,
+            vk::PipelineBindPoint::GRAPHICS,
+            self.pipeline,
+        );
+
+        logical_device.cmd_bind_vertex_buffers(
+            command_buffer,
+            0,
+            &[self.vertex_buffer.get_buffer()],
+            &[0],
+        );
+
+        logical_device.cmd_bind_index_buffer(
+            command_buffer,
+            self.index_buffer.get_buffer(),
+            0,
+            vk::IndexType::UINT32,
+        );
+
+        logical_device.cmd_bind_descriptor_sets(
+            command_buffer,
+            vk::PipelineBindPoint::GRAPHICS,
+            self.pipeline_layout,
+            0,
+            &[self.descriptor_sets[image_index]],
+            &[0],
+        );
+
+        // self.push_constants(logical_device, command_buffer, position);
+
+        logical_device.cmd_draw_indexed(
+            command_buffer,
+            self.index_buffer.get_indice_count(),
+            self.instance_count,
+            0,
+            0,
+            0,
+        );
+
+        Ok(())
+    }
+
+    pub unsafe fn destroy(&mut self, logical_device: &Device) {
+        self.texture.destroy(logical_device);
+        self.vertex_buffer.destroy(logical_device);
+        self.index_buffer.destroy(logical_device);
+        self.instance_buffer.destroy(logical_device);
+        logical_device.destroy_descriptor_pool(self.descriptor_pool, None);
+        logical_device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
+        logical_device.destroy_pipeline(self.pipeline, None);
+        logical_device.destroy_pipeline_layout(self.pipeline_layout, None);
+    }
+}
+
+#[derive(Debug)]
 pub struct Model {
     pub vertex_buffer: VertexBuffer,
     pub index_buffer: IndexBuffer,
@@ -1069,6 +1595,32 @@ pub struct Model {
     pub descriptor_pool: vk::DescriptorPool,
     pub descriptor_sets: Vec<vk::DescriptorSet>,
     pub texture: Texture,
+}
+
+impl HasBuffers for Model {
+    fn get_index_buffer(&self) -> Option<&IndexBuffer> {
+        Some(&self.index_buffer)
+    }
+
+    fn get_vertex_buffer(&self) -> Option<&VertexBuffer> {
+        Some(&self.vertex_buffer)
+    }
+
+    fn get_vertex_buffer_mut(&mut self) -> Option<&mut VertexBuffer> {
+        Some(&mut self.vertex_buffer)
+    }
+
+    fn get_index_buffer_mut(&mut self) -> Option<&mut IndexBuffer> {
+        Some(&mut self.index_buffer)
+    }
+
+    fn get_instance_buffer(&self) -> Option<&InstanceBuffer> {
+        None
+    }
+
+    fn get_instance_buffer_mut(&mut self) -> Option<&mut InstanceBuffer> {
+        None
+    }
 }
 
 impl Model {
@@ -1088,32 +1640,12 @@ impl Model {
 
         let texture = Texture::create(texture_path)?;
 
-        let descriptor_set_layout = g_utils::create_descriptor_set_layout(logical_device, 1)?;
+        let descriptor_set_layout = Self::create_descriptor_set_layout(logical_device, 1)?;
 
         let pipeline_layout =
             g_utils::create_pipeline_layout(logical_device, descriptor_set_layout)?;
 
-        // let pipeline = g_utils::create_pipeline(
-        //     logical_device,
-        //     vert_shader_module,
-        //     frag_shader_module,
-        //     extent.width,
-        //     extent.height,
-        //     msaa_samples,
-        //     pipeline_layout,
-        //     render_pass,
-        // )?;
         let pipeline = vk::Pipeline::null();
-
-        // let descriptor_pool =
-        //     g_utils::create_descriptor_pool(logical_device, swapchain_images_count, 1, 1)?;
-
-        // let descriptor_sets = g_utils::create_descriptor_sets(
-        //     logical_device,
-        //     descriptor_set_layout,
-        //     descriptor_pool,
-        //     1,
-        // )?;
 
         let descriptor_pool = vk::DescriptorPool::null();
         let descriptor_sets = Vec::new();
@@ -1130,13 +1662,37 @@ impl Model {
         })
     }
 
+    pub unsafe fn create_descriptor_set_layout(
+        logical_device: &Device,
+        texture_count: u32,
+    ) -> Result<vk::DescriptorSetLayout> {
+        let ubo_binding = vk::DescriptorSetLayoutBinding::builder()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::VERTEX);
+
+        let sampler_binding = vk::DescriptorSetLayoutBinding::builder()
+            .binding(1)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(texture_count)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+
+        let bindings = &[ubo_binding, sampler_binding];
+        let info = vk::DescriptorSetLayoutCreateInfo::builder().bindings(bindings);
+
+        logical_device
+            .create_descriptor_set_layout(&info, None)
+            .map_err(|e| anyhow!("{}", e))
+    }
+
     pub unsafe fn create_descriptor_pool_and_sets(
         &mut self,
         logical_device: &Device,
         swapchain_images_count: usize,
     ) -> Result<()> {
         self.descriptor_pool =
-            g_utils::create_descriptor_pool(logical_device, swapchain_images_count as u32, 1)?;
+            Self::create_descriptor_pool(logical_device, swapchain_images_count as u32, 1)?;
 
         self.descriptor_sets = g_utils::create_descriptor_sets(
             logical_device,
@@ -1146,6 +1702,29 @@ impl Model {
         )?;
 
         Ok(())
+    }
+
+    pub unsafe fn create_descriptor_pool(
+        logical_device: &Device,
+        swapchain_images_count: u32,
+        texture_count: u32,
+    ) -> Result<vk::DescriptorPool> {
+        let ubo_size = vk::DescriptorPoolSize::builder()
+            .type_(vk::DescriptorType::UNIFORM_BUFFER)
+            .descriptor_count(swapchain_images_count);
+
+        let sampler_size = vk::DescriptorPoolSize::builder()
+            .type_(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(swapchain_images_count * texture_count);
+
+        let pool_sizes = &[ubo_size, sampler_size];
+        let info = vk::DescriptorPoolCreateInfo::builder()
+            .pool_sizes(pool_sizes)
+            .max_sets(swapchain_images_count);
+
+        logical_device
+            .create_descriptor_pool(&info, None)
+            .map_err(|e| anyhow!("{}", e))
     }
 
     pub unsafe fn update_descriptor_sets(
@@ -1197,8 +1776,12 @@ impl Model {
         render_pass: vk::RenderPass,
         extent: vk::Extent2D,
     ) -> Result<()> {
-        let vert = include_bytes!("../../shaders/vert.spv");
-        let frag = include_bytes!("../../shaders/frag.spv");
+        let (vert, frag) = {
+            (
+                include_bytes!("../../shaders/vert.spv").to_vec(),
+                include_bytes!("../../shaders/frag.spv").to_vec(),
+            )
+        };
 
         let vert_shader_module = g_utils::create_shader_module(logical_device, &vert[..])?;
         let frag_shader_module = g_utils::create_shader_module(logical_device, &frag[..])?;
@@ -1218,6 +1801,7 @@ impl Model {
 
         Ok(())
     }
+
     pub unsafe fn push_constants(
         &self,
         logical_device: &Device,
@@ -1309,125 +1893,6 @@ impl Model {
         Ok(())
     }
 
-    // pub unsafe fn make_command_buffer(
-    //     &mut self,
-    //     logical_device: &Device,
-    //     image_index: usize,
-    //     model_index: usize,
-    //     command_buffers: &mut Vec<vk::CommandBuffer>,
-    //     command_pool_sets: &Vec<g_types::CommandPoolSet>,
-    //     pipeline: &Pipeline,
-    //     framebuffers: &Vec<vk::Framebuffer>,
-    //     descriptor_sets: &Vec<vk::DescriptorSet>,
-    //     start: std::time::Instant,
-    // ) -> Result<vk::CommandBuffer> {
-    //     // let command_buffers = &mut self.presenter.secondary_command_buffers[image_index];
-    //     while model_index >= command_buffers.len() {
-    //         println!("Allocating new secondary command buffer");
-    //         let allocate_info = vk::CommandBufferAllocateInfo::builder()
-    //             .command_pool(command_pool_sets[image_index].graphics)
-    //             .level(vk::CommandBufferLevel::SECONDARY)
-    //             .command_buffer_count(1);
-
-    //         let command_buffer = logical_device.allocate_command_buffers(&allocate_info)?[0];
-    //         command_buffers.push(command_buffer);
-    //     }
-
-    //     let command_buffer = command_buffers[model_index];
-
-    //     let inheritance_info = vk::CommandBufferInheritanceInfo::builder()
-    //         .render_pass(pipeline.render_pass)
-    //         .subpass(0)
-    //         .framebuffer(framebuffers[image_index]);
-
-    //     let info = vk::CommandBufferBeginInfo::builder()
-    //         .flags(vk::CommandBufferUsageFlags::RENDER_PASS_CONTINUE)
-    //         .inheritance_info(&inheritance_info);
-
-    //     logical_device.begin_command_buffer(command_buffer, &info)?;
-
-    //     let time = start.elapsed().as_secs_f32();
-
-    //     let y = (((model_index % 2) as f32) * 2.5) - 1.25;
-    //     let z = (((model_index / 2) as f32) * -2.0) + 1.0;
-
-    //     logical_device.cmd_bind_pipeline(
-    //         command_buffer,
-    //         vk::PipelineBindPoint::GRAPHICS,
-    //         pipeline.pipeline,
-    //     );
-
-    //     logical_device.cmd_bind_descriptor_sets(
-    //         command_buffer,
-    //         vk::PipelineBindPoint::GRAPHICS,
-    //         pipeline.pipeline_layout,
-    //         0,
-    //         &[descriptor_sets[image_index]],
-    //         &[],
-    //     );
-
-    //     // for (_name, model) in self.model_manager.models.iter() {
-    //     // let model = self.model_manager.models.get_mut(model_name).unwrap();
-
-    //     logical_device.cmd_bind_vertex_buffers(
-    //         command_buffer,
-    //         0,
-    //         &[self.vertex_buffer.get_buffer()],
-    //         &[0],
-    //     );
-
-    //     logical_device.cmd_bind_index_buffer(
-    //         command_buffer,
-    //         self.index_buffer.get_buffer(),
-    //         0,
-    //         vk::IndexType::UINT32,
-    //     );
-
-    //     let model_mat = g_types::Mat4::from_translation(self.position)
-    //         * g_types::Mat4::from_axis_angle(
-    //             g_types::vec3(0.0, 0.0, 1.0),
-    //             g_types::Deg(90.0) * time,
-    //         );
-    //     let model_bytes = std::slice::from_raw_parts(
-    //         &model_mat as *const g_types::Mat4 as *const u8,
-    //         size_of::<g_types::Mat4>(),
-    //     );
-
-    //     logical_device.cmd_push_constants(
-    //         command_buffer,
-    //         pipeline.pipeline_layout,
-    //         vk::ShaderStageFlags::VERTEX,
-    //         0,
-    //         model_bytes,
-    //     );
-
-    //     logical_device.cmd_push_constants(
-    //         command_buffer,
-    //         pipeline.pipeline_layout,
-    //         vk::ShaderStageFlags::FRAGMENT,
-    //         64,
-    //         &[
-    //             (model_index % 2).to_ne_bytes(),
-    //             (model_index % 2).to_ne_bytes(),
-    //         ]
-    //         .concat(),
-    //     );
-
-    //     logical_device.cmd_draw_indexed(
-    //         command_buffer,
-    //         self.index_buffer.get_indice_count(),
-    //         1,
-    //         0,
-    //         0,
-    //         0,
-    //     );
-    //     // }
-
-    //     logical_device.end_command_buffer(command_buffer)?;
-
-    //     Ok(command_buffer)
-    // }
-
     pub unsafe fn destroy(&mut self, logical_device: &Device) {
         self.texture.destroy(logical_device);
         self.vertex_buffer.destroy(logical_device);
@@ -1441,6 +1906,7 @@ impl Model {
 
 pub struct ModelManager {
     pub models: HashMap<String, Model>,
+    pub instanced_models: HashMap<String, InstancedModel>,
     pub buffer_allocator: BufferMemoryAllocator,
     pub texture_engine: TextureMemoryAllocator,
 }
@@ -1452,6 +1918,7 @@ impl ModelManager {
 
         Ok(Self {
             models: HashMap::new(),
+            instanced_models: HashMap::new(),
             buffer_allocator,
             texture_engine,
         })
@@ -1464,6 +1931,11 @@ impl ModelManager {
         extent: vk::Extent2D,
     ) -> Result<()> {
         for model in self.models.values_mut() {
+            logical_device.destroy_pipeline(model.pipeline, None);
+            model.create_pipeline(logical_device, msaa_samples, render_pass, extent)?;
+        }
+
+        for model in self.instanced_models.values_mut() {
             logical_device.destroy_pipeline(model.pipeline, None);
             model.create_pipeline(logical_device, msaa_samples, render_pass, extent)?;
         }
@@ -1482,6 +1954,10 @@ impl ModelManager {
             model.create_pipeline(logical_device, msaa_samples, render_pass, extent)?;
         }
 
+        for model in self.instanced_models.values_mut() {
+            model.create_pipeline(logical_device, msaa_samples, render_pass, extent)?;
+        }
+
         Ok(())
     }
 
@@ -1494,6 +1970,9 @@ impl ModelManager {
             model.create_descriptor_pool_and_sets(logical_device, swapchain_images_count)?;
         }
 
+        for model in self.instanced_models.values_mut() {
+            model.create_descriptor_pool_and_sets(logical_device, swapchain_images_count)?;
+        }
         Ok(())
     }
 
@@ -1503,6 +1982,14 @@ impl ModelManager {
         swapchain_images_count: usize,
     ) -> Result<()> {
         for model in self.models.values_mut() {
+            model.update_descriptor_sets(
+                logical_device,
+                swapchain_images_count,
+                &self.buffer_allocator.uniform_buffers_to_allocate,
+            )?;
+        }
+
+        for model in self.instanced_models.values_mut() {
             model.update_descriptor_sets(
                 logical_device,
                 swapchain_images_count,
@@ -1527,7 +2014,8 @@ impl ModelManager {
             physical_device,
             queue_set,
             &command_pool_set,
-            &mut self.models,
+            &mut self.models.iter_mut().collect::<HashMap<_, _>>(),
+            &mut self.instanced_models.iter_mut().collect::<HashMap<_, _>>(),
         )?;
 
         Ok(())
@@ -1542,7 +2030,8 @@ impl ModelManager {
             instance,
             logical_device,
             physical_device,
-            &mut self.models,
+            &mut self.models.iter_mut().collect::<HashMap<_, _>>(),
+            &mut self.instanced_models.iter_mut().collect::<HashMap<_, _>>(),
         )?;
 
         Ok(())
@@ -1561,11 +2050,19 @@ impl ModelManager {
                 &format!("resources/{}/{}.obj", model_name, model_name),
                 &format!("resources/{}/{}.png", model_name, model_name),
                 logical_device,
-                // msaa_samples,
-                // render_pass,
-                // swapchain_images_count,
             )?;
             self.add_model(model_name, model);
+        }
+
+        for (model_name, positions) in scene.instanced_models.iter() {
+            let instanced_model = InstancedModel::create(
+                &format!("resources/{}/{}.obj", model_name, model_name),
+                &format!("resources/{}/{}.png", model_name, model_name),
+                logical_device,
+                positions,
+            )?;
+
+            self.add_instanced_model(model_name, instanced_model);
         }
 
         Ok(())
@@ -1574,6 +2071,9 @@ impl ModelManager {
     pub unsafe fn create_buffers(&mut self, logical_device: &Device) -> Result<()> {
         self.buffer_allocator
             .create_buffers(logical_device, &mut self.models)?;
+
+        self.buffer_allocator
+            .create_instanced_buffers(logical_device, &mut self.instanced_models)?;
 
         Ok(())
     }
@@ -1586,13 +2086,26 @@ impl ModelManager {
         queue_set: &g_utils::QueueSet,
         command_pool_set: g_types::CommandPoolSet,
     ) -> Result<()> {
+        let size = self.models.values().fold(0, |acc, model| {
+            acc + model.vertex_buffer.get_required_size() + model.index_buffer.get_required_size()
+        }) + self.instanced_models.values().fold(0, |acc, model| {
+            acc + model.instance_buffer.get_required_size()
+                + model.vertex_buffer.get_required_size()
+                + model.index_buffer.get_required_size()
+        });
+
+        self.buffer_allocator
+            .create_memories(instance, logical_device, physical_device, size)?;
+
         self.buffer_allocator.allocate_memory(
             instance,
             logical_device,
             physical_device,
             queue_set,
             command_pool_set,
-            &mut self.models,
+            &mut self.models.values_mut().collect::<Vec<_>>(),
+            &mut self.instanced_models.values_mut().collect::<Vec<_>>(),
+            size,
         )?;
 
         Ok(())
@@ -1602,10 +2115,19 @@ impl ModelManager {
         self.models.insert(name.to_string(), model);
     }
 
+    pub unsafe fn add_instanced_model(&mut self, name: &str, model: InstancedModel) {
+        self.instanced_models.insert(name.to_string(), model);
+    }
+
     pub unsafe fn destroy(&mut self, logical_device: &Device) {
         self.models
             .values_mut()
             .for_each(|model| model.destroy(logical_device));
+
+        self.instanced_models
+            .values_mut()
+            .for_each(|model| model.destroy(logical_device));
+
         self.texture_engine.destroy(logical_device);
 
         self.buffer_allocator.destroy(logical_device);
@@ -1614,6 +2136,7 @@ impl ModelManager {
 
 pub struct Scene {
     models: HashMap<String, g_types::Vec3>,
+    instanced_models: HashMap<String, Vec<g_types::Vec3>>,
 }
 
 impl Scene {
@@ -1622,10 +2145,16 @@ impl Scene {
             models: [
                 ("landscape", g_types::vec3(0.0, 0.0, 0.0)),
                 ("viking_room", g_types::vec3(0.0, 0.0, 4.0)),
-                ("sphere", g_types::vec3(3.0, 0.0, 4.0)),
             ]
-            .iter()
-            .map(|(name, pos)| (name.to_string(), *pos))
+            .into_iter()
+            .map(|(name, pos)| (name.to_string(), pos))
+            .collect::<HashMap<_, _>>(),
+            instanced_models: [(
+                "sphere",
+                vec![g_types::vec3(3.0, 0.0, 6.0), g_types::vec3(3.0, 0.0, 8.0)],
+            )]
+            .into_iter()
+            .map(|(name, pos)| (name.to_string(), pos))
             .collect::<HashMap<_, _>>(),
         })
     }
@@ -1645,4 +2174,29 @@ impl Scene {
 
         Ok(())
     }
+
+    pub unsafe fn draw_instanced_models(
+        &self,
+        image_index: usize,
+        model_manager: &ModelManager,
+        logical_device: &Device,
+        command_buffer: vk::CommandBuffer,
+    ) -> Result<()> {
+        for (_model_index, (model_name, _positions)) in self.instanced_models.iter().enumerate() {
+            let model = model_manager.instanced_models.get(model_name).unwrap();
+
+            model.draw_models(logical_device, command_buffer, image_index)?;
+        }
+
+        Ok(())
+    }
+}
+
+pub trait HasBuffers {
+    fn get_vertex_buffer(&self) -> Option<&VertexBuffer>;
+    fn get_vertex_buffer_mut(&mut self) -> Option<&mut VertexBuffer>;
+    fn get_index_buffer(&self) -> Option<&IndexBuffer>;
+    fn get_index_buffer_mut(&mut self) -> Option<&mut IndexBuffer>;
+    fn get_instance_buffer(&self) -> Option<&InstanceBuffer>;
+    fn get_instance_buffer_mut(&mut self) -> Option<&mut InstanceBuffer>;
 }

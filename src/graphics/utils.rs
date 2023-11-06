@@ -518,7 +518,7 @@ pub unsafe fn create_pipeline_layout(
         .map_err(|e| anyhow!("{}", e))
 }
 
-pub unsafe fn create_pipeline(
+pub unsafe fn create_instanced_pipeline(
     logical_device: &Device,
     vert_shader_module: vk::ShaderModule,
     frag_shader_module: vk::ShaderModule,
@@ -538,10 +538,10 @@ pub unsafe fn create_pipeline(
         .module(frag_shader_module)
         .name(b"main\0");
 
-    let binding_descriptions = &[g_types::Vertex::binding_description()];
+    let binding_descriptions = g_types::Vertex::binding_description(vk::VertexInputRate::INSTANCE);
     let attribute_descriptions = g_types::Vertex::attribute_descriptions();
     let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::builder()
-        .vertex_binding_descriptions(binding_descriptions)
+        .vertex_binding_descriptions(&binding_descriptions)
         .vertex_attribute_descriptions(&attribute_descriptions);
 
     let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::builder()
@@ -624,45 +624,110 @@ pub unsafe fn create_pipeline(
         .0[0])
 }
 
-pub unsafe fn create_pipeline_and_renderpass(
-    instance: &Instance,
+pub unsafe fn create_pipeline(
     logical_device: &Device,
-    physical_device: vk::PhysicalDevice,
-    swapchain: &g_objects::Swapchain,
-    descriptor_set_layout: vk::DescriptorSetLayout,
+    vert_shader_module: vk::ShaderModule,
+    frag_shader_module: vk::ShaderModule,
+    width: u32,
+    height: u32,
     msaa_samples: vk::SampleCountFlags,
-) -> Result<(vk::PipelineLayout, vk::RenderPass, vk::Pipeline)> {
-    let pipeline_layout = create_pipeline_layout(logical_device, descriptor_set_layout)?;
+    pipeline_layout: vk::PipelineLayout,
+    render_pass: vk::RenderPass,
+) -> Result<vk::Pipeline> {
+    let vert_stage = vk::PipelineShaderStageCreateInfo::builder()
+        .stage(vk::ShaderStageFlags::VERTEX)
+        .module(vert_shader_module)
+        .name(b"main\0");
 
-    let render_pass = create_render_pass(
-        instance,
-        logical_device,
-        physical_device,
-        swapchain,
-        msaa_samples,
-    )?;
+    let frag_stage = vk::PipelineShaderStageCreateInfo::builder()
+        .stage(vk::ShaderStageFlags::FRAGMENT)
+        .module(frag_shader_module)
+        .name(b"main\0");
 
-    let vert = include_bytes!("../../shaders/vert.spv");
-    let frag = include_bytes!("../../shaders/frag.spv");
+    let binding_descriptions = g_types::Vertex::binding_description(vk::VertexInputRate::VERTEX);
+    let attribute_descriptions = g_types::Vertex::attribute_descriptions();
+    let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::builder()
+        .vertex_binding_descriptions(&binding_descriptions)
+        .vertex_attribute_descriptions(&attribute_descriptions);
 
-    let vert_shader_module = create_shader_module(logical_device, &vert[..])?;
-    let frag_shader_module = create_shader_module(logical_device, &frag[..])?;
+    let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::builder()
+        .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+        .primitive_restart_enable(false);
 
-    let pipeline = create_pipeline(
-        logical_device,
-        vert_shader_module,
-        frag_shader_module,
-        swapchain.extent.width,
-        swapchain.extent.height,
-        msaa_samples,
-        pipeline_layout,
-        render_pass,
-    )?;
+    let viewport = vk::Viewport::builder()
+        .x(0.0)
+        .y(0.0)
+        .width(width as f32)
+        .height(height as f32)
+        .min_depth(0.0)
+        .max_depth(1.0);
 
-    logical_device.destroy_shader_module(vert_shader_module, None);
-    logical_device.destroy_shader_module(frag_shader_module, None);
+    let scissor = vk::Rect2D::builder()
+        .offset(vk::Offset2D { x: 0, y: 0 })
+        .extent(vk::Extent2D { width, height });
 
-    Ok((pipeline_layout, render_pass, pipeline))
+    let viewports = &[viewport];
+    let scissors = &[scissor];
+    let viewport_state = vk::PipelineViewportStateCreateInfo::builder()
+        .viewports(viewports)
+        .scissors(scissors);
+
+    let rasterization_state = vk::PipelineRasterizationStateCreateInfo::builder()
+        .depth_clamp_enable(false)
+        .rasterizer_discard_enable(false)
+        .polygon_mode(vk::PolygonMode::FILL)
+        .line_width(1.0)
+        .cull_mode(vk::CullModeFlags::BACK)
+        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+        .depth_bias_enable(false);
+
+    let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::builder()
+        .depth_test_enable(true)
+        .depth_write_enable(true)
+        .depth_compare_op(vk::CompareOp::LESS)
+        .depth_bounds_test_enable(false)
+        .min_depth_bounds(0.0) // Optional.
+        .max_depth_bounds(1.0) // Optional.
+        .stencil_test_enable(false); // Optional.
+
+    let multisample_state = vk::PipelineMultisampleStateCreateInfo::builder()
+        .sample_shading_enable(false)
+        .rasterization_samples(msaa_samples);
+
+    let attachment = vk::PipelineColorBlendAttachmentState::builder()
+        .color_write_mask(vk::ColorComponentFlags::all())
+        .blend_enable(true)
+        .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+        .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+        .color_blend_op(vk::BlendOp::ADD)
+        .src_alpha_blend_factor(vk::BlendFactor::ONE)
+        .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+        .alpha_blend_op(vk::BlendOp::ADD);
+
+    let attachments = &[attachment];
+    let color_blend_state = vk::PipelineColorBlendStateCreateInfo::builder()
+        .logic_op_enable(false)
+        .logic_op(vk::LogicOp::COPY)
+        .attachments(attachments)
+        .blend_constants([0.0, 0.0, 0.0, 0.0]);
+
+    let stages = &[vert_stage, frag_stage];
+    let info = vk::GraphicsPipelineCreateInfo::builder()
+        .stages(stages)
+        .vertex_input_state(&vertex_input_state)
+        .input_assembly_state(&input_assembly_state)
+        .viewport_state(&viewport_state)
+        .rasterization_state(&rasterization_state)
+        .multisample_state(&multisample_state)
+        .depth_stencil_state(&depth_stencil_state)
+        .color_blend_state(&color_blend_state)
+        .layout(pipeline_layout)
+        .render_pass(render_pass)
+        .subpass(0);
+
+    Ok(logical_device
+        .create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)?
+        .0[0])
 }
 
 pub unsafe fn create_shader_module(
@@ -1035,55 +1100,8 @@ pub unsafe fn get_memory_info(
         .build())
 }
 
-pub unsafe fn create_descriptor_set_layout(
-    logical_device: &Device,
-    texture_count: u32,
-) -> Result<vk::DescriptorSetLayout> {
-    let ubo_binding = vk::DescriptorSetLayoutBinding::builder()
-        .binding(0)
-        .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-        .descriptor_count(1)
-        .stage_flags(vk::ShaderStageFlags::VERTEX);
-
-    let sampler_binding = vk::DescriptorSetLayoutBinding::builder()
-        .binding(1)
-        .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-        .descriptor_count(texture_count)
-        .stage_flags(vk::ShaderStageFlags::FRAGMENT);
-
-    let bindings = &[ubo_binding, sampler_binding];
-    let info = vk::DescriptorSetLayoutCreateInfo::builder().bindings(bindings);
-
-    logical_device
-        .create_descriptor_set_layout(&info, None)
-        .map_err(|e| anyhow!("{}", e))
-}
-
 pub fn align_up(value: u64, alignment: u64) -> u64 {
     (value + alignment - 1) & !(alignment - 1)
-}
-
-pub unsafe fn create_descriptor_pool(
-    logical_device: &Device,
-    swapchain_images_count: u32,
-    texture_count: u32,
-) -> Result<vk::DescriptorPool> {
-    let ubo_size = vk::DescriptorPoolSize::builder()
-        .type_(vk::DescriptorType::UNIFORM_BUFFER)
-        .descriptor_count(swapchain_images_count);
-
-    let sampler_size = vk::DescriptorPoolSize::builder()
-        .type_(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-        .descriptor_count(swapchain_images_count * texture_count);
-
-    let pool_sizes = &[ubo_size, sampler_size];
-    let info = vk::DescriptorPoolCreateInfo::builder()
-        .pool_sizes(pool_sizes)
-        .max_sets(swapchain_images_count);
-
-    logical_device
-        .create_descriptor_pool(&info, None)
-        .map_err(|e| anyhow!("{}", e))
 }
 
 pub unsafe fn create_descriptor_sets(

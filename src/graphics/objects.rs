@@ -270,14 +270,14 @@ pub struct InstanceBuffer {
     pub offset: Option<u64>,
     pub changed: bool,
     pub reqs: Option<vk::MemoryRequirements>,
-    pub positions: Vec<g_types::Vec3>,
+    pub model_matrixes: Vec<g_types::Mat4>,
 }
 
 impl InstanceBuffer {
     pub unsafe fn create(positions: &[g_types::Vec3]) -> Result<Self> {
         let size = std::mem::size_of_val(positions) as u64;
 
-        let models = positions
+        let model_matrixes = positions
             .iter()
             .map(|position| g_types::Mat4::from_translation(*position))
             .collect::<Vec<_>>();
@@ -288,7 +288,7 @@ impl InstanceBuffer {
             offset: None,
             changed: false,
             reqs: None,
-            positions: positions.to_vec(),
+            model_matrixes,
         })
     }
 
@@ -709,7 +709,12 @@ impl BufferMemoryAllocator {
 
                 offset = g_utils::align_up(offset, buffer.reqs.unwrap().alignment);
                 let dst = self.stage_memory_ptr.add(offset as usize).cast();
-                g_utils::memcpy(buffer.positions.as_ptr(), dst, buffer.positions.len());
+                println!("buffer.model_matrixes {:?}", buffer.model_matrixes);
+                g_utils::memcpy(
+                    buffer.model_matrixes.as_ptr(),
+                    dst,
+                    buffer.model_matrixes.len(),
+                );
                 buffer.offset = Some(offset);
                 offset += buffer.size.unwrap();
             });
@@ -1507,7 +1512,7 @@ impl InstancedModel {
 
         let vert_shader_module = g_utils::create_shader_module(logical_device, &vert[..])?;
         let frag_shader_module = g_utils::create_shader_module(logical_device, &frag[..])?;
-        self.pipeline = g_utils::create_instanced_pipeline(
+        self.pipeline = g_utils::create_pipeline(
             logical_device,
             vert_shader_module,
             frag_shader_module,
@@ -1815,8 +1820,8 @@ impl Model {
 
         // self.set_position(g_types::vec3(0.0, y, z));
 
-        let model_mat = g_types::Mat4::from_translation(*position)
-            * g_types::Mat4::from_axis_angle(g_types::vec3(0.0, 0.0, 1.0), g_types::Deg(90.0));
+        let model_mat = g_types::Mat4::from_translation(*position);
+        // * g_types::Mat4::from_axis_angle(g_types::vec3(0.0, 0.0, 1.0), g_types::Deg(90.0));
         let model_bytes = std::slice::from_raw_parts(
             &model_mat as *const g_types::Mat4 as *const u8,
             size_of::<g_types::Mat4>(),

@@ -27,6 +27,14 @@ pub type Point3 = cgmath::Point3<f32>;
 
 #[repr(C, align(16))]
 #[derive(Copy, Clone, Debug, Serialize)]
+pub struct IndexedVertex {
+    pos: Vec3,
+    normal: Vec3,
+    tex_coord: Vec2,
+}
+
+#[repr(C, align(16))]
+#[derive(Copy, Clone, Debug, Serialize)]
 pub struct Vertex {
     pos: Vec3,
     normal: Vec3,
@@ -44,12 +52,12 @@ impl Vertex {
 
     pub fn binding_description(
         input_rate: vk::VertexInputRate,
-    ) -> Vec<vk::VertexInputBindingDescription> {
-        vec![vk::VertexInputBindingDescription::builder()
+    ) -> vk::VertexInputBindingDescription {
+        vk::VertexInputBindingDescription::builder()
             .binding(0)
             .stride(size_of::<Vertex>() as u32)
             .input_rate(input_rate)
-            .build()]
+            .build()
     }
 
     pub fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; 3] {

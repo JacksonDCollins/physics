@@ -28,6 +28,7 @@ pub const PORTABILITY_MACOS_VERSION: Version = Version::new(1, 3, 216);
 pub const DEVICE_EXTENSIONS: &[vk::ExtensionName] = &[
     vk::KHR_SWAPCHAIN_EXTENSION.name,
     vk::KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION.name,
+    vk::EXT_DESCRIPTOR_INDEXING_EXTENSION.name,
 ];
 pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
@@ -372,13 +373,18 @@ pub unsafe fn create_logical_device(
         extensions.push(vk::KHR_PORTABILITY_SUBSET_EXTENSION.name.as_ptr());
     }
 
-    let features = vk::PhysicalDeviceFeatures::builder().sampler_anisotropy(true);
+    let mut indexing_features = vk::PhysicalDeviceDescriptorIndexingFeaturesEXT::builder()
+        .runtime_descriptor_array(true)
+        .build();
 
+    let features = vk::PhysicalDeviceFeatures::builder().sampler_anisotropy(true);
     let info = vk::DeviceCreateInfo::builder()
         .queue_create_infos(&queue_infos)
         .enabled_layer_names(&layers)
         .enabled_extension_names(&extensions)
         .enabled_features(&features);
+
+    let info = info.push_next(&mut indexing_features);
 
     let device = instance.create_device(physical_device, &info, None)?;
 
@@ -544,10 +550,12 @@ pub unsafe fn create_pipeline(
         .module(frag_shader_module)
         .name(b"main\0");
 
-    let binding_descriptions = g_types::Vertex::binding_description(vk::VertexInputRate::VERTEX);
+    let binding_descriptions = &[g_types::Vertex::binding_description(
+        vk::VertexInputRate::VERTEX,
+    )];
     let attribute_descriptions = g_types::Vertex::attribute_descriptions();
     let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::builder()
-        .vertex_binding_descriptions(&binding_descriptions)
+        .vertex_binding_descriptions(binding_descriptions)
         .vertex_attribute_descriptions(&attribute_descriptions);
 
     let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::builder()

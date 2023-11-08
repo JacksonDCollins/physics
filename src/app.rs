@@ -139,3 +139,5 @@ impl App {
         self.instance.destroy_instance(None);
     }
 }
+
+//todo try sending instance buffer ad vertex buffer with steprate insatnce and not as  unirofmr buffer

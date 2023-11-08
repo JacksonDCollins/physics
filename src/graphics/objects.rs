@@ -275,12 +275,13 @@ pub struct InstanceBuffer {
 
 impl InstanceBuffer {
     pub unsafe fn create(positions: &[g_types::Vec3]) -> Result<Self> {
-        let size = std::mem::size_of_val(positions) as u64;
-
         let model_matrixes = positions
             .iter()
             .map(|position| g_types::Mat4::from_translation(*position))
             .collect::<Vec<_>>();
+
+        let size = std::mem::size_of::<g_types::Mat4>() as u64 * positions.len() as u64;
+        println!("size {:?}", size);
 
         Ok(Self {
             buffer: vk::Buffer::null(), //vertex_buffer,
@@ -314,7 +315,7 @@ impl InstanceBuffer {
             self.buffer = g_utils::create_buffer(
                 logical_device,
                 self.size.unwrap(),
-                vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::STORAGE_BUFFER,
+                vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::UNIFORM_BUFFER,
             )?;
 
             self.reqs = Some(logical_device.get_buffer_memory_requirements(self.buffer));
@@ -715,6 +716,11 @@ impl BufferMemoryAllocator {
                     dst,
                     buffer.model_matrixes.len(),
                 );
+
+                println!("dst {:?}", *dst.add(0));
+                println!("dst {:?}", *dst.add(1));
+                println!("dst {:?}", *dst.add(2));
+
                 buffer.offset = Some(offset);
                 offset += buffer.size.unwrap();
             });
@@ -1344,7 +1350,7 @@ impl InstancedModel {
 
         let texture = Texture::create(texture_path)?;
 
-        let descriptor_set_layout = Self::create_descriptor_set_layout(logical_device, 1)?;
+        let descriptor_set_layout = Self::create_descriptor_set_layout(logical_device)?;
 
         let pipeline_layout =
             g_utils::create_pipeline_layout(logical_device, descriptor_set_layout)?;
@@ -1371,7 +1377,6 @@ impl InstancedModel {
 
     pub unsafe fn create_descriptor_set_layout(
         logical_device: &Device,
-        texture_count: u32,
     ) -> Result<vk::DescriptorSetLayout> {
         let ubo_binding = vk::DescriptorSetLayoutBinding::builder()
             .binding(0)
@@ -1381,14 +1386,14 @@ impl InstancedModel {
 
         let render_parameters_binding = vk::DescriptorSetLayoutBinding::builder()
             .binding(2)
-            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER_DYNAMIC)
+            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::VERTEX);
 
         let sampler_binding = vk::DescriptorSetLayoutBinding::builder()
             .binding(1)
             .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(texture_count)
+            .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::FRAGMENT);
 
         let bindings = &[ubo_binding, render_parameters_binding, sampler_binding];
@@ -1405,7 +1410,7 @@ impl InstancedModel {
         swapchain_images_count: usize,
     ) -> Result<()> {
         self.descriptor_pool =
-            Self::create_descriptor_pool(logical_device, swapchain_images_count as u32, 1)?;
+            Self::create_descriptor_pool(logical_device, swapchain_images_count as u32)?;
 
         self.descriptor_sets = g_utils::create_descriptor_sets(
             logical_device,
@@ -1420,7 +1425,6 @@ impl InstancedModel {
     pub unsafe fn create_descriptor_pool(
         logical_device: &Device,
         swapchain_images_count: u32,
-        texture_count: u32,
     ) -> Result<vk::DescriptorPool> {
         let ubo_size = vk::DescriptorPoolSize::builder()
             .type_(vk::DescriptorType::UNIFORM_BUFFER)
@@ -1428,10 +1432,10 @@ impl InstancedModel {
 
         let sampler_size = vk::DescriptorPoolSize::builder()
             .type_(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(swapchain_images_count * texture_count);
+            .descriptor_count(swapchain_images_count);
 
         let render_params_size = vk::DescriptorPoolSize::builder()
-            .type_(vk::DescriptorType::STORAGE_BUFFER_DYNAMIC)
+            .type_(vk::DescriptorType::UNIFORM_BUFFER)
             .descriptor_count(swapchain_images_count);
 
         let pool_sizes = &[ubo_size, sampler_size, render_params_size];
@@ -1471,7 +1475,7 @@ impl InstancedModel {
                 .dst_set(self.descriptor_sets[i])
                 .dst_binding(2)
                 .dst_array_element(0)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER_DYNAMIC)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .buffer_info(buffer_info);
 
             let image_info = &[vk::DescriptorImageInfo::builder()
@@ -1561,7 +1565,7 @@ impl InstancedModel {
             self.pipeline_layout,
             0,
             &[self.descriptor_sets[image_index]],
-            &[0],
+            &[],
         );
 
         // self.push_constants(logical_device, command_buffer, position);
@@ -2156,7 +2160,11 @@ impl Scene {
             .collect::<HashMap<_, _>>(),
             instanced_models: [(
                 "sphere",
-                vec![g_types::vec3(3.0, 0.0, 6.0), g_types::vec3(3.0, 0.0, 8.0)],
+                vec![
+                    g_types::vec3(1.0, 0.0, 4.0),
+                    g_types::vec3(3.0, 0.0, 6.0),
+                    g_types::vec3(5.0, 0.0, 8.0),
+                ],
             )]
             .into_iter()
             .map(|(name, pos)| (name.to_string(), pos))

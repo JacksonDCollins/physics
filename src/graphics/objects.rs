@@ -684,6 +684,8 @@ impl BufferMemoryAllocator {
                 g_utils::align_up(offset, model.instance_buffer.reqs.unwrap().alignment),
                 offset == g_utils::align_up(offset, model.instance_buffer.reqs.unwrap().alignment)
             );
+
+            println!("{:?}", model.instance_buffer.model_matrixes);
             offset = g_utils::align_up(offset, model.instance_buffer.reqs.unwrap().alignment);
             let dst = self.stage_memory_ptr.add(offset as usize).cast();
             g_utils::memcpy(
@@ -1833,19 +1835,19 @@ impl Scene {
         Ok(Self {
             models: [
                 ("landscape", vec![g_types::vec3(0.0, 0.0, 0.0)]),
-                ("viking_room", vec![g_types::vec3(0.0, 0.0, 4.0)]),
-                (
-                    "sphere",
-                    (0..10)
-                        .map(|_| {
-                            g_types::vec3(
-                                rng.gen_range(-10.0..10.0),
-                                rng.gen_range(-10.0..10.0),
-                                rng.gen_range(0.0..10.0),
-                            )
-                        })
-                        .collect(),
-                ),
+                // ("viking_room", vec![g_types::vec3(0.0, 0.0, 4.0)]),
+                // (
+                //     "sphere",
+                //     (0..10)
+                //         .map(|_| {
+                //             g_types::vec3(
+                //                 rng.gen_range(-10.0..10.0),
+                //                 rng.gen_range(-10.0..10.0),
+                //                 rng.gen_range(0.0..10.0),
+                //             )
+                //         })
+                //         .collect(),
+                // ),
             ]
             .into_iter()
             .map(|(name, pos)| (name.to_string(), pos))

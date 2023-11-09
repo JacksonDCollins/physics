@@ -2,6 +2,10 @@ use crate::graphics::objects as g_objects;
 use crate::graphics::types as g_types;
 use anyhow::{anyhow, Result};
 
+use vulkano::instance::Instance;
+use vulkano::instance::InstanceCreateInfo;
+use vulkano::VulkanLibrary;
+
 use std::collections::HashSet;
 use std::ffi::CStr;
 
@@ -32,90 +36,93 @@ pub const DEVICE_EXTENSIONS: &[vk::ExtensionName] = &[
 pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 pub unsafe fn create_instance(
-    window: &Window,
-    entry: &Entry,
+    // window: &Window,
+    // entry: &Entry,
+    library: &VulkanLibrary,
 ) -> Result<(Instance, Option<vk::DebugUtilsMessengerEXT>)> {
-    let application_info = vk::ApplicationInfo::builder()
-        .application_name(b"Physics")
-        .application_version(vk::make_version(1, 0, 0))
-        .engine_name(b"No Engine")
-        .engine_version(vk::make_version(1, 0, 0))
-        .api_version(vk::make_version(1, 0, 0));
+    // let application_info = vk::ApplicationInfo::builder()
+    //     .application_name(b"Physics")
+    //     .application_version(vk::make_version(1, 0, 0))
+    //     .engine_name(b"No Engine")
+    //     .engine_version(vk::make_version(1, 0, 0))
+    //     .api_version(vk::make_version(1, 0, 0));
 
-    let available_layers = entry
-        .enumerate_instance_layer_properties()?
-        .iter()
-        .map(|layer| layer.layer_name)
-        .collect::<HashSet<_>>();
+    // let available_layers = entry
+    //     .enumerate_instance_layer_properties()?
+    //     .iter()
+    //     .map(|layer| layer.layer_name)
+    //     .collect::<HashSet<_>>();
 
-    if VALIDATION_ENABLED && !available_layers.contains(&VALIDATION_LAYER) {
-        return Err(anyhow!("Validation layer not available"));
-    }
+    // if VALIDATION_ENABLED && !available_layers.contains(&VALIDATION_LAYER) {
+    //     return Err(anyhow!("Validation layer not available"));
+    // }
 
-    let layers = if VALIDATION_ENABLED {
-        vec![VALIDATION_LAYER.as_ptr()]
-    } else {
-        vec![]
-    };
+    // let layers = if VALIDATION_ENABLED {
+    //     vec![VALIDATION_LAYER.as_ptr()]
+    // } else {
+    //     vec![]
+    // };
 
-    let mut extensions = vulkanalia::window::get_required_instance_extensions(window)
-        .iter()
-        .map(|e| e.as_ptr())
-        .collect::<Vec<_>>();
+    // let mut extensions = vulkanalia::window::get_required_instance_extensions(window)
+    //     .iter()
+    //     .map(|e| e.as_ptr())
+    //     .collect::<Vec<_>>();
 
-    if VALIDATION_ENABLED {
-        extensions.push(vk::EXT_DEBUG_UTILS_EXTENSION.name.as_ptr());
-    }
+    // if VALIDATION_ENABLED {
+    //     extensions.push(vk::EXT_DEBUG_UTILS_EXTENSION.name.as_ptr());
+    // }
 
-    // Required by Vulkan SDK on macOS since 1.3.216.
-    let flags = if cfg!(target_os = "macos") && entry.version()? >= PORTABILITY_MACOS_VERSION {
-        log::info!("Enabling extensions for macOS portability");
-        extensions.push(
-            vk::KHR_GET_PHYSICAL_DEVICE_PROPERTIES2_EXTENSION
-                .name
-                .as_ptr(),
-        );
-        extensions.push(vk::KHR_PORTABILITY_ENUMERATION_EXTENSION.name.as_ptr());
-        vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR
-    } else {
-        vk::InstanceCreateFlags::empty()
-    };
+    // // Required by Vulkan SDK on macOS since 1.3.216.
+    // let flags = if cfg!(target_os = "macos") && entry.version()? >= PORTABILITY_MACOS_VERSION {
+    //     log::info!("Enabling extensions for macOS portability");
+    //     extensions.push(
+    //         vk::KHR_GET_PHYSICAL_DEVICE_PROPERTIES2_EXTENSION
+    //             .name
+    //             .as_ptr(),
+    //     );
+    //     extensions.push(vk::KHR_PORTABILITY_ENUMERATION_EXTENSION.name.as_ptr());
+    //     vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR
+    // } else {
+    //     vk::InstanceCreateFlags::empty()
+    // };
 
-    let mut features = vk::ValidationFeaturesEXT::builder()
-        .enabled_validation_features(&[
-            vk::ValidationFeatureEnableEXT::BEST_PRACTICES,
-            vk::ValidationFeatureEnableEXT::DEBUG_PRINTF,
-        ])
-        .build();
+    // let mut features = vk::ValidationFeaturesEXT::builder()
+    //     .enabled_validation_features(&[
+    //         vk::ValidationFeatureEnableEXT::BEST_PRACTICES,
+    //         vk::ValidationFeatureEnableEXT::DEBUG_PRINTF,
+    //     ])
+    //     .build();
 
-    let mut instance_info = vk::InstanceCreateInfo::builder()
-        .application_info(&application_info)
-        .enabled_layer_names(&layers)
-        .enabled_extension_names(&extensions)
-        .flags(flags);
+    let mut instance_info = InstanceCreateInfo::application_from_cargo_toml();
 
-    let mut debug_info = vk::DebugUtilsMessengerCreateInfoEXT::builder()
-        .message_severity(
-            vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
-                | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
-        )
-        .message_type(vk::DebugUtilsMessageTypeFlagsEXT::all())
-        .user_callback(Some(debug_callback));
+    instance_info.enabled_layers = &layers;
+    instance_info.enabled_extension_names(&extensions);
+    instance_info.flags(flags);
 
-    if VALIDATION_ENABLED {
-        instance_info = instance_info.push_next(&mut debug_info);
-        instance_info = instance_info.push_next(&mut features);
-    }
+    // let mut debug_info = vk::DebugUtilsMessengerCreateInfoEXT::builder()
+    //     .message_severity(
+    //         vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
+    //             | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
+    //     )
+    //     .message_type(vk::DebugUtilsMessageTypeFlagsEXT::all())
+    //     .user_callback(Some(debug_callback));
 
-    let instance = entry.create_instance(&instance_info, None)?;
+    // if VALIDATION_ENABLED {
+    //     instance_info = instance_info.push_next(&mut debug_info);
+    //     instance_info = instance_info.push_next(&mut features);
+    // }
 
-    let messenger = if VALIDATION_ENABLED {
-        Some(instance.create_debug_utils_messenger_ext(&debug_info, None)?)
-    } else {
-        None
-    };
+    // let instance = entry.create_instance(&instance_info, None)?;
 
-    Ok((instance, messenger))
+    // let messenger = if VALIDATION_ENABLED {
+    //     Some(instance.create_debug_utils_messenger_ext(&debug_info, None)?)
+    // } else {
+    //     None
+    // };
+
+    // Ok((instance, messenger))
+
+    Instance::new(library)
 }
 
 extern "system" fn debug_callback(

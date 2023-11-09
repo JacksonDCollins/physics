@@ -10,6 +10,9 @@ use vulkanalia::{
 use winit::event::WindowEvent;
 use winit::window::Window;
 
+use vulkano::instance::{Instance, InstanceCreateInfo};
+use vulkano::VulkanLibrary;
+
 pub struct App {
     entry: Entry,
     instance: Instance,
@@ -27,9 +30,12 @@ pub struct App {
 
 impl App {
     pub unsafe fn create(window: &Window) -> Result<Self> {
-        let loader = LibloadingLoader::new(LIBRARY)?;
-        let entry = Entry::new(loader).map_err(|e| anyhow!("{}", e))?;
-        let (instance, dbg_messenger) = graphics::utils::create_instance(window, &entry)?;
+        // let loader = LibloadingLoader::new(LIBRARY)?;
+        // let entry = Entry::new(loader).map_err(|e| anyhow!("{}", e))?;
+        let library = VulkanLibrary::new()?;
+        // let (instance, dbg_messenger) = graphics::utils::create_instance(window, &entry)?;
+        let (instance, dbg_messenger) = graphics::utils::create_instance(library)?;
+
         let surface = vulkanalia::window::create_surface(&instance, &window, &window)?;
         let (physical_device, queue_family_indices, swapchain_support, msaa_samples) =
             graphics::utils::pick_physical_device(&instance, surface)?;

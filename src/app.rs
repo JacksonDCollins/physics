@@ -140,4 +140,5 @@ impl App {
     }
 }
 
-//todo try sending instance buffer ad vertex buffer with steprate insatnce and not as  unirofmr buffer
+// put view proj into push constants
+//refmorat vertex attrbviute bindinghs

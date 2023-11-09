@@ -28,7 +28,6 @@ pub const PORTABILITY_MACOS_VERSION: Version = Version::new(1, 3, 216);
 pub const DEVICE_EXTENSIONS: &[vk::ExtensionName] = &[
     vk::KHR_SWAPCHAIN_EXTENSION.name,
     vk::KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION.name,
-    vk::EXT_DESCRIPTOR_INDEXING_EXTENSION.name,
 ];
 pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
@@ -373,9 +372,9 @@ pub unsafe fn create_logical_device(
         extensions.push(vk::KHR_PORTABILITY_SUBSET_EXTENSION.name.as_ptr());
     }
 
-    let mut indexing_features = vk::PhysicalDeviceDescriptorIndexingFeaturesEXT::builder()
-        .runtime_descriptor_array(true)
-        .build();
+    // let mut indexing_features = vk::PhysicalDeviceDescriptorIndexingFeaturesEXT::builder()
+    //     .runtime_descriptor_array(true)
+    //     .build();
 
     let features = vk::PhysicalDeviceFeatures::builder().sampler_anisotropy(true);
     let info = vk::DeviceCreateInfo::builder()
@@ -384,7 +383,7 @@ pub unsafe fn create_logical_device(
         .enabled_extension_names(&extensions)
         .enabled_features(&features);
 
-    let info = info.push_next(&mut indexing_features);
+    // let info = info.push_next(&mut indexing_features);
 
     let device = instance.create_device(physical_device, &info, None)?;
 
@@ -528,114 +527,6 @@ pub unsafe fn create_pipeline_layout(
     logical_device
         .create_pipeline_layout(&layout_info, None)
         .map_err(|e| anyhow!("{}", e))
-}
-
-pub unsafe fn create_pipeline(
-    logical_device: &Device,
-    vert_shader_module: vk::ShaderModule,
-    frag_shader_module: vk::ShaderModule,
-    width: u32,
-    height: u32,
-    msaa_samples: vk::SampleCountFlags,
-    pipeline_layout: vk::PipelineLayout,
-    render_pass: vk::RenderPass,
-) -> Result<vk::Pipeline> {
-    let vert_stage = vk::PipelineShaderStageCreateInfo::builder()
-        .stage(vk::ShaderStageFlags::VERTEX)
-        .module(vert_shader_module)
-        .name(b"main\0");
-
-    let frag_stage = vk::PipelineShaderStageCreateInfo::builder()
-        .stage(vk::ShaderStageFlags::FRAGMENT)
-        .module(frag_shader_module)
-        .name(b"main\0");
-
-    let binding_descriptions = &[g_types::Vertex::binding_description(
-        vk::VertexInputRate::VERTEX,
-    )];
-    let attribute_descriptions = g_types::Vertex::attribute_descriptions();
-    let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::builder()
-        .vertex_binding_descriptions(binding_descriptions)
-        .vertex_attribute_descriptions(&attribute_descriptions);
-
-    let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::builder()
-        .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-        .primitive_restart_enable(false);
-
-    let viewport = vk::Viewport::builder()
-        .x(0.0)
-        .y(0.0)
-        .width(width as f32)
-        .height(height as f32)
-        .min_depth(0.0)
-        .max_depth(1.0);
-
-    let scissor = vk::Rect2D::builder()
-        .offset(vk::Offset2D { x: 0, y: 0 })
-        .extent(vk::Extent2D { width, height });
-
-    let viewports = &[viewport];
-    let scissors = &[scissor];
-    let viewport_state = vk::PipelineViewportStateCreateInfo::builder()
-        .viewports(viewports)
-        .scissors(scissors);
-
-    let rasterization_state = vk::PipelineRasterizationStateCreateInfo::builder()
-        .depth_clamp_enable(false)
-        .rasterizer_discard_enable(false)
-        .polygon_mode(vk::PolygonMode::FILL)
-        .line_width(1.0)
-        .cull_mode(vk::CullModeFlags::BACK)
-        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-        .depth_bias_enable(false);
-
-    let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::builder()
-        .depth_test_enable(true)
-        .depth_write_enable(true)
-        .depth_compare_op(vk::CompareOp::LESS)
-        .depth_bounds_test_enable(false)
-        .min_depth_bounds(0.0) // Optional.
-        .max_depth_bounds(1.0) // Optional.
-        .stencil_test_enable(false); // Optional.
-
-    let multisample_state = vk::PipelineMultisampleStateCreateInfo::builder()
-        .sample_shading_enable(false)
-        .rasterization_samples(msaa_samples);
-
-    let attachment = vk::PipelineColorBlendAttachmentState::builder()
-        .color_write_mask(vk::ColorComponentFlags::all())
-        .blend_enable(true)
-        .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
-        .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-        .color_blend_op(vk::BlendOp::ADD)
-        .src_alpha_blend_factor(vk::BlendFactor::ONE)
-        .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
-        .alpha_blend_op(vk::BlendOp::ADD);
-
-    let attachments = &[attachment];
-    let color_blend_state = vk::PipelineColorBlendStateCreateInfo::builder()
-        .logic_op_enable(false)
-        .logic_op(vk::LogicOp::COPY)
-        .attachments(attachments)
-        .blend_constants([0.0, 0.0, 0.0, 0.0]);
-
-    let stages = &[vert_stage, frag_stage];
-    let info = vk::GraphicsPipelineCreateInfo::builder()
-        .stages(stages)
-        .vertex_input_state(&vertex_input_state)
-        .input_assembly_state(&input_assembly_state)
-        .viewport_state(&viewport_state)
-        .rasterization_state(&rasterization_state)
-        .multisample_state(&multisample_state)
-        .depth_stencil_state(&depth_stencil_state)
-        .color_blend_state(&color_blend_state)
-        .layout(pipeline_layout)
-        .render_pass(render_pass)
-        .subpass(0);
-
-    Ok(logical_device
-        .create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)?
-        .0[0])
 }
 
 pub unsafe fn create_shader_module(

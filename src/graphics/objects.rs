@@ -10,6 +10,7 @@ use crate::graphics::utils as g_utils;
 use anyhow::{anyhow, Result};
 
 use rand::distributions::uniform;
+use rand::Rng;
 use vulkanalia::prelude::v1_2::*;
 use vulkanalia::vk::KhrSwapchainExtension;
 
@@ -281,7 +282,7 @@ impl InstanceBuffer {
             .collect::<Vec<_>>();
 
         let size = std::mem::size_of::<g_types::Mat4>() as u64 * positions.len() as u64;
-        println!("size {:?}", size);
+        // println!("size {:?}", size);
 
         Ok(Self {
             buffer: vk::Buffer::null(), //vertex_buffer,
@@ -315,7 +316,7 @@ impl InstanceBuffer {
             self.buffer = g_utils::create_buffer(
                 logical_device,
                 self.size.unwrap(),
-                vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::UNIFORM_BUFFER,
+                vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
             )?;
 
             self.reqs = Some(logical_device.get_buffer_memory_requirements(self.buffer));
@@ -668,7 +669,7 @@ impl BufferMemoryAllocator {
             )
             .filter(|buffer| buffer.size.is_some())
             .for_each(|buffer| {
-                println!("buffer {:?}", buffer.buffer);
+                // println!("buffer {:?}", buffer.buffer);
 
                 offset = g_utils::align_up(offset, buffer.reqs.unwrap().alignment);
                 let dst = self.stage_memory_ptr.add(offset as usize).cast();
@@ -687,7 +688,7 @@ impl BufferMemoryAllocator {
             )
             .filter(|buffer| buffer.size.is_some())
             .for_each(|buffer| {
-                println!("buffer {:?}", buffer.buffer);
+                // println!("buffer {:?}", buffer.buffer);
 
                 offset = g_utils::align_up(offset, buffer.reqs.unwrap().alignment);
                 let dst = self.stage_memory_ptr.add(offset as usize).cast();
@@ -706,20 +707,20 @@ impl BufferMemoryAllocator {
             )
             .filter(|buffer| buffer.size.is_some())
             .for_each(|buffer| {
-                println!("buffer {:?}", buffer.buffer);
+                // println!("buffer {:?}", buffer.buffer);
 
                 offset = g_utils::align_up(offset, buffer.reqs.unwrap().alignment);
                 let dst = self.stage_memory_ptr.add(offset as usize).cast();
-                println!("buffer.model_matrixes {:?}", buffer.model_matrixes);
+                // println!("buffer.model_matrixes {:?}", buffer.model_matrixes);
                 g_utils::memcpy(
                     buffer.model_matrixes.as_ptr(),
                     dst,
                     buffer.model_matrixes.len(),
                 );
 
-                println!("dst {:?}", *dst.add(0));
-                println!("dst {:?}", *dst.add(1));
-                println!("dst {:?}", *dst.add(2));
+                // println!("dst {:?}", *dst.add(0));
+                // println!("dst {:?}", *dst.add(1));
+                // println!("dst {:?}", *dst.add(2));
 
                 buffer.offset = Some(offset);
                 offset += buffer.size.unwrap();
@@ -1384,19 +1385,13 @@ impl InstancedModel {
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::VERTEX);
 
-        let render_parameters_binding = vk::DescriptorSetLayoutBinding::builder()
-            .binding(2)
-            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::VERTEX);
-
         let sampler_binding = vk::DescriptorSetLayoutBinding::builder()
             .binding(1)
             .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::FRAGMENT);
 
-        let bindings = &[ubo_binding, render_parameters_binding, sampler_binding];
+        let bindings = &[ubo_binding, sampler_binding];
         let info = vk::DescriptorSetLayoutCreateInfo::builder().bindings(bindings);
 
         logical_device
@@ -1434,11 +1429,7 @@ impl InstancedModel {
             .type_(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .descriptor_count(swapchain_images_count);
 
-        let render_params_size = vk::DescriptorPoolSize::builder()
-            .type_(vk::DescriptorType::UNIFORM_BUFFER)
-            .descriptor_count(swapchain_images_count);
-
-        let pool_sizes = &[ubo_size, sampler_size, render_params_size];
+        let pool_sizes = &[ubo_size, sampler_size];
         let info = vk::DescriptorPoolCreateInfo::builder()
             .pool_sizes(pool_sizes)
             .max_sets(swapchain_images_count);
@@ -1466,18 +1457,6 @@ impl InstancedModel {
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .buffer_info(buffer_info);
 
-            let buffer_info = &[vk::DescriptorBufferInfo::builder()
-                .buffer(self.instance_buffer.get_buffer())
-                .offset(0)
-                .range(self.instance_buffer.get_size())];
-
-            let render_params_write = vk::WriteDescriptorSet::builder()
-                .dst_set(self.descriptor_sets[i])
-                .dst_binding(2)
-                .dst_array_element(0)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .buffer_info(buffer_info);
-
             let image_info = &[vk::DescriptorImageInfo::builder()
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                 .image_view(self.texture.image_view)
@@ -1492,7 +1471,7 @@ impl InstancedModel {
                 .image_info(image_info);
 
             logical_device.update_descriptor_sets(
-                &[ubo_write, render_params_write, image_info_write],
+                &[ubo_write, image_info_write],
                 &[] as &[vk::CopyDescriptorSet],
             );
         });
@@ -1516,16 +1495,144 @@ impl InstancedModel {
 
         let vert_shader_module = g_utils::create_shader_module(logical_device, &vert[..])?;
         let frag_shader_module = g_utils::create_shader_module(logical_device, &frag[..])?;
-        self.pipeline = g_utils::create_pipeline(
-            logical_device,
-            vert_shader_module,
-            frag_shader_module,
-            extent.width,
-            extent.height,
-            msaa_samples,
-            self.pipeline_layout,
-            render_pass,
-        )?;
+        let vert_stage = vk::PipelineShaderStageCreateInfo::builder()
+            .stage(vk::ShaderStageFlags::VERTEX)
+            .module(vert_shader_module)
+            .name(b"main\0");
+
+        let frag_stage = vk::PipelineShaderStageCreateInfo::builder()
+            .stage(vk::ShaderStageFlags::FRAGMENT)
+            .module(frag_shader_module)
+            .name(b"main\0");
+
+        let binding_descriptions = &[
+            g_types::Vertex::binding_description(),
+            vk::VertexInputBindingDescription::builder()
+                .binding(1)
+                .stride(std::mem::size_of::<g_types::Mat4>() as u32)
+                .input_rate(vk::VertexInputRate::INSTANCE)
+                .build(),
+        ];
+        let attribute_descriptions = g_types::Vertex::attribute_descriptions()
+            .iter()
+            .chain(&[
+                vk::VertexInputAttributeDescription::builder()
+                    .binding(1)
+                    .location(3)
+                    .format(vk::Format::R32G32B32A32_SFLOAT)
+                    .offset(0)
+                    .build(),
+                vk::VertexInputAttributeDescription::builder()
+                    .binding(1)
+                    .location(4)
+                    .format(vk::Format::R32G32B32A32_SFLOAT)
+                    .offset((size_of::<g_types::Vec4>()) as u32)
+                    .build(),
+                vk::VertexInputAttributeDescription::builder()
+                    .binding(1)
+                    .location(5)
+                    .format(vk::Format::R32G32B32A32_SFLOAT)
+                    .offset((size_of::<g_types::Vec4>() + size_of::<g_types::Vec4>()) as u32)
+                    .build(),
+                vk::VertexInputAttributeDescription::builder()
+                    .binding(1)
+                    .location(6)
+                    .format(vk::Format::R32G32B32A32_SFLOAT)
+                    .offset(
+                        (size_of::<g_types::Vec4>()
+                            + size_of::<g_types::Vec4>()
+                            + size_of::<g_types::Vec4>()) as u32,
+                    )
+                    .build(),
+            ])
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::builder()
+            .vertex_binding_descriptions(binding_descriptions)
+            .vertex_attribute_descriptions(&attribute_descriptions);
+
+        let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::builder()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            .primitive_restart_enable(false);
+
+        let viewport = vk::Viewport::builder()
+            .x(0.0)
+            .y(0.0)
+            .width(extent.width as f32)
+            .height(extent.height as f32)
+            .min_depth(0.0)
+            .max_depth(1.0);
+
+        let scissor = vk::Rect2D::builder()
+            .offset(vk::Offset2D { x: 0, y: 0 })
+            .extent(vk::Extent2D {
+                width: extent.width,
+                height: extent.height,
+            });
+
+        let viewports = &[viewport];
+        let scissors = &[scissor];
+        let viewport_state = vk::PipelineViewportStateCreateInfo::builder()
+            .viewports(viewports)
+            .scissors(scissors);
+
+        let rasterization_state = vk::PipelineRasterizationStateCreateInfo::builder()
+            .depth_clamp_enable(false)
+            .rasterizer_discard_enable(false)
+            .polygon_mode(vk::PolygonMode::FILL)
+            .line_width(1.0)
+            .cull_mode(vk::CullModeFlags::BACK)
+            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+            .depth_bias_enable(false);
+
+        let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::builder()
+            .depth_test_enable(true)
+            .depth_write_enable(true)
+            .depth_compare_op(vk::CompareOp::LESS)
+            .depth_bounds_test_enable(false)
+            .min_depth_bounds(0.0) // Optional.
+            .max_depth_bounds(1.0) // Optional.
+            .stencil_test_enable(false); // Optional.
+
+        let multisample_state = vk::PipelineMultisampleStateCreateInfo::builder()
+            .sample_shading_enable(false)
+            .rasterization_samples(msaa_samples);
+
+        let attachment = vk::PipelineColorBlendAttachmentState::builder()
+            .color_write_mask(vk::ColorComponentFlags::all())
+            .blend_enable(true)
+            .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+            .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+            .color_blend_op(vk::BlendOp::ADD)
+            .src_alpha_blend_factor(vk::BlendFactor::ONE)
+            .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+            .alpha_blend_op(vk::BlendOp::ADD);
+
+        let attachments = &[attachment];
+        let color_blend_state = vk::PipelineColorBlendStateCreateInfo::builder()
+            .logic_op_enable(false)
+            .logic_op(vk::LogicOp::COPY)
+            .attachments(attachments)
+            .blend_constants([0.0, 0.0, 0.0, 0.0]);
+
+        let stages = &[vert_stage, frag_stage];
+        let info = vk::GraphicsPipelineCreateInfo::builder()
+            .stages(stages)
+            .vertex_input_state(&vertex_input_state)
+            .input_assembly_state(&input_assembly_state)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterization_state)
+            .multisample_state(&multisample_state)
+            .depth_stencil_state(&depth_stencil_state)
+            .color_blend_state(&color_blend_state)
+            .layout(self.pipeline_layout)
+            .render_pass(render_pass)
+            .subpass(0);
+
+        self.pipeline = logical_device
+            .create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)?
+            .0[0];
 
         logical_device.destroy_shader_module(vert_shader_module, None);
         logical_device.destroy_shader_module(frag_shader_module, None);
@@ -1548,8 +1655,11 @@ impl InstancedModel {
         logical_device.cmd_bind_vertex_buffers(
             command_buffer,
             0,
-            &[self.vertex_buffer.get_buffer()],
-            &[0],
+            &[
+                self.vertex_buffer.get_buffer(),
+                self.instance_buffer.get_buffer(),
+            ],
+            &[0, 0],
         );
 
         logical_device.cmd_bind_index_buffer(
@@ -1649,7 +1759,7 @@ impl Model {
 
         let texture = Texture::create(texture_path)?;
 
-        let descriptor_set_layout = Self::create_descriptor_set_layout(logical_device, 1)?;
+        let descriptor_set_layout = Self::create_descriptor_set_layout(logical_device)?;
 
         let pipeline_layout =
             g_utils::create_pipeline_layout(logical_device, descriptor_set_layout)?;
@@ -1673,7 +1783,6 @@ impl Model {
 
     pub unsafe fn create_descriptor_set_layout(
         logical_device: &Device,
-        texture_count: u32,
     ) -> Result<vk::DescriptorSetLayout> {
         let ubo_binding = vk::DescriptorSetLayoutBinding::builder()
             .binding(0)
@@ -1684,7 +1793,7 @@ impl Model {
         let sampler_binding = vk::DescriptorSetLayoutBinding::builder()
             .binding(1)
             .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(texture_count)
+            .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::FRAGMENT);
 
         let bindings = &[ubo_binding, sampler_binding];
@@ -1701,7 +1810,7 @@ impl Model {
         swapchain_images_count: usize,
     ) -> Result<()> {
         self.descriptor_pool =
-            Self::create_descriptor_pool(logical_device, swapchain_images_count as u32, 1)?;
+            Self::create_descriptor_pool(logical_device, swapchain_images_count as u32)?;
 
         self.descriptor_sets = g_utils::create_descriptor_sets(
             logical_device,
@@ -1716,7 +1825,6 @@ impl Model {
     pub unsafe fn create_descriptor_pool(
         logical_device: &Device,
         swapchain_images_count: u32,
-        texture_count: u32,
     ) -> Result<vk::DescriptorPool> {
         let ubo_size = vk::DescriptorPoolSize::builder()
             .type_(vk::DescriptorType::UNIFORM_BUFFER)
@@ -1724,7 +1832,7 @@ impl Model {
 
         let sampler_size = vk::DescriptorPoolSize::builder()
             .type_(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(swapchain_images_count * texture_count);
+            .descriptor_count(swapchain_images_count);
 
         let pool_sizes = &[ubo_size, sampler_size];
         let info = vk::DescriptorPoolCreateInfo::builder()
@@ -1794,16 +1902,104 @@ impl Model {
 
         let vert_shader_module = g_utils::create_shader_module(logical_device, &vert[..])?;
         let frag_shader_module = g_utils::create_shader_module(logical_device, &frag[..])?;
-        self.pipeline = g_utils::create_pipeline(
-            logical_device,
-            vert_shader_module,
-            frag_shader_module,
-            extent.width,
-            extent.height,
-            msaa_samples,
-            self.pipeline_layout,
-            render_pass,
-        )?;
+
+        let vert_stage = vk::PipelineShaderStageCreateInfo::builder()
+            .stage(vk::ShaderStageFlags::VERTEX)
+            .module(vert_shader_module)
+            .name(b"main\0");
+
+        let frag_stage = vk::PipelineShaderStageCreateInfo::builder()
+            .stage(vk::ShaderStageFlags::FRAGMENT)
+            .module(frag_shader_module)
+            .name(b"main\0");
+
+        let binding_descriptions = &[g_types::Vertex::binding_description()];
+        let attribute_descriptions = g_types::Vertex::attribute_descriptions();
+        let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::builder()
+            .vertex_binding_descriptions(binding_descriptions)
+            .vertex_attribute_descriptions(&attribute_descriptions);
+
+        let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::builder()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            .primitive_restart_enable(false);
+
+        let viewport = vk::Viewport::builder()
+            .x(0.0)
+            .y(0.0)
+            .width(extent.width as f32)
+            .height(extent.height as f32)
+            .min_depth(0.0)
+            .max_depth(1.0);
+
+        let scissor = vk::Rect2D::builder()
+            .offset(vk::Offset2D { x: 0, y: 0 })
+            .extent(vk::Extent2D {
+                width: extent.width,
+                height: extent.height,
+            });
+
+        let viewports = &[viewport];
+        let scissors = &[scissor];
+        let viewport_state = vk::PipelineViewportStateCreateInfo::builder()
+            .viewports(viewports)
+            .scissors(scissors);
+
+        let rasterization_state = vk::PipelineRasterizationStateCreateInfo::builder()
+            .depth_clamp_enable(false)
+            .rasterizer_discard_enable(false)
+            .polygon_mode(vk::PolygonMode::FILL)
+            .line_width(1.0)
+            .cull_mode(vk::CullModeFlags::BACK)
+            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+            .depth_bias_enable(false);
+
+        let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::builder()
+            .depth_test_enable(true)
+            .depth_write_enable(true)
+            .depth_compare_op(vk::CompareOp::LESS)
+            .depth_bounds_test_enable(false)
+            .min_depth_bounds(0.0) // Optional.
+            .max_depth_bounds(1.0) // Optional.
+            .stencil_test_enable(false); // Optional.
+
+        let multisample_state = vk::PipelineMultisampleStateCreateInfo::builder()
+            .sample_shading_enable(false)
+            .rasterization_samples(msaa_samples);
+
+        let attachment = vk::PipelineColorBlendAttachmentState::builder()
+            .color_write_mask(vk::ColorComponentFlags::all())
+            .blend_enable(true)
+            .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+            .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+            .color_blend_op(vk::BlendOp::ADD)
+            .src_alpha_blend_factor(vk::BlendFactor::ONE)
+            .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+            .alpha_blend_op(vk::BlendOp::ADD);
+
+        let attachments = &[attachment];
+        let color_blend_state = vk::PipelineColorBlendStateCreateInfo::builder()
+            .logic_op_enable(false)
+            .logic_op(vk::LogicOp::COPY)
+            .attachments(attachments)
+            .blend_constants([0.0, 0.0, 0.0, 0.0]);
+
+        let stages = &[vert_stage, frag_stage];
+        let info = vk::GraphicsPipelineCreateInfo::builder()
+            .stages(stages)
+            .vertex_input_state(&vertex_input_state)
+            .input_assembly_state(&input_assembly_state)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterization_state)
+            .multisample_state(&multisample_state)
+            .depth_stencil_state(&depth_stencil_state)
+            .color_blend_state(&color_blend_state)
+            .layout(self.pipeline_layout)
+            .render_pass(render_pass)
+            .subpass(0);
+
+        self.pipeline = logical_device
+            .create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)?
+            .0[0];
 
         logical_device.destroy_shader_module(vert_shader_module, None);
         logical_device.destroy_shader_module(frag_shader_module, None);
@@ -2150,6 +2346,7 @@ pub struct Scene {
 
 impl Scene {
     pub unsafe fn create() -> Result<Self> {
+        let mut rng = rand::thread_rng();
         Ok(Self {
             models: [
                 ("landscape", g_types::vec3(0.0, 0.0, 0.0)),
@@ -2160,11 +2357,16 @@ impl Scene {
             .collect::<HashMap<_, _>>(),
             instanced_models: [(
                 "sphere",
-                vec![
-                    g_types::vec3(1.0, 0.0, 4.0),
-                    g_types::vec3(3.0, 0.0, 6.0),
-                    g_types::vec3(5.0, 0.0, 8.0),
-                ],
+                vec![0; 10000]
+                    .iter()
+                    .map(|_| {
+                        g_types::vec3(
+                            rng.gen_range(-100.0..100.0),
+                            rng.gen_range(-100.0..100.0),
+                            rng.gen_range(0.0..100.0),
+                        )
+                    })
+                    .collect(),
             )]
             .into_iter()
             .map(|(name, pos)| (name.to_string(), pos))

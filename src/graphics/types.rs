@@ -9,6 +9,7 @@ use vulkanalia::prelude::v1_2::*;
 
 pub type Vec2 = cgmath::Vector2<f32>;
 pub type Vec3 = cgmath::Vector3<f32>;
+pub type Vec4 = cgmath::Vector4<f32>;
 pub type Mat4 = cgmath::Matrix4<f32>;
 pub type Point3 = cgmath::Point3<f32>;
 
@@ -50,13 +51,11 @@ impl Vertex {
         }
     }
 
-    pub fn binding_description(
-        input_rate: vk::VertexInputRate,
-    ) -> vk::VertexInputBindingDescription {
+    pub fn binding_description() -> vk::VertexInputBindingDescription {
         vk::VertexInputBindingDescription::builder()
             .binding(0)
             .stride(size_of::<Vertex>() as u32)
-            .input_rate(input_rate)
+            .input_rate(vk::VertexInputRate::VERTEX)
             .build()
     }
 

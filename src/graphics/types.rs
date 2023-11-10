@@ -5,7 +5,8 @@ use std::{
     hash::{Hash, Hasher},
     mem::size_of,
 };
-use vulkanalia::prelude::v1_2::*;
+// use vulkanalia::prelude::v1_2::*;
+use ash::vk;
 
 pub type Vec2 = cgmath::Vector2<f32>;
 pub type Vec3 = cgmath::Vector3<f32>;
@@ -127,7 +128,7 @@ impl CommandPoolSet {
         }
     }
 
-    pub fn destroy(&self, logical_device: &Device) {
+    pub fn destroy(&self, logical_device: &ash::Device) {
         unsafe {
             logical_device.destroy_command_pool(self.present, None);
             logical_device.destroy_command_pool(self.graphics, None);

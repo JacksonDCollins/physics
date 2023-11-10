@@ -2,18 +2,20 @@ use crate::graphics::objects as g_objects;
 use crate::graphics::types as g_types;
 use anyhow::{anyhow, Result};
 use ash::extensions::ext::DebugUtils;
-use ash::vk::Event;
-use winit::event_loop;
+use ash::extensions::khr::Surface;
+use ash::extensions::khr::Swapchain;
+
+use raw_window_handle::HasRawDisplayHandle;
+
+use winit::event_loop::EventLoop;
 
 use std::collections::HashSet;
 use std::ffi::CStr;
 
-use std::mem::size_of;
 use std::os::raw::c_void;
 
-use std::collections::HashMap;
 use std::fs::File;
-use std::hash::{Hash, Hasher};
+
 use std::io::BufReader;
 use thiserror::Error;
 // use vulkanalia::bytecode::Bytecode;
@@ -21,31 +23,29 @@ use thiserror::Error;
 // use vulkanalia::vk::{ExtDebugUtilsExtension, KhrSurfaceExtension, KhrSwapchainExtension};
 // use vulkanalia::{Entry, Version};
 use ash::{vk, Entry};
-use raw_window_handle::{
-    HasRawDisplayHandle, HasRawWindowHandle, RawDisplayHandle, RawWindowHandle,
-};
+
 pub use std::ptr::copy_nonoverlapping as memcpy;
 use winit::window::Window;
 
 pub const VALIDATION_ENABLED: bool = cfg!(debug_assertions);
 pub const VALIDATION_LAYER: &CStr =
-    CStr::from_bytes_with_nul(b"VK_LAYER_KHRONOS_validation\0").unwrap();
+    unsafe { CStr::from_bytes_with_nul_unchecked(b"VK_LAYER_KHRONOS_validation\0") };
 pub const PORTABILITY_MACOS_VERSION: u32 = vk::make_api_version(0, 1, 3, 216);
-// pub const DEVICE_EXTENSIONS: &[vk::ExtensionName] = &[
-//     vk::KHR_SWAPCHAIN_EXTENSION.name,
-//     vk::KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION.name,
-// ];
+pub const DEVICE_EXTENSIONS: &[&CStr] = &[ash::extensions::khr::Swapchain::name()];
 pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 pub unsafe fn create_instance(
-    window: &Window,
     entry: &Entry,
-    event_loop: EventLoop<()>,
-) -> Result<(vk::Instance, Option<vk::DebugUtilsMessengerEXT>)> {
+    event_loop: &EventLoop<()>,
+) -> Result<(
+    ash::Instance,
+    Option<vk::DebugUtilsMessengerEXT>,
+    DebugUtils,
+)> {
     let application_info = vk::ApplicationInfo::builder()
-        .application_name(&CStr::from_bytes_with_nul(b"App\0").unwrap())
+        .application_name(CStr::from_bytes_with_nul(b"App\0").unwrap())
         .application_version(vk::make_api_version(0, 1, 0, 0))
-        .engine_name(&CStr::from_bytes_with_nul(b"No Engine\0").unwrap())
+        .engine_name(CStr::from_bytes_with_nul(b"No Engine\0").unwrap())
         .engine_version(vk::make_api_version(0, 1, 0, 0))
         .api_version(vk::make_api_version(0, 1, 0, 0));
 
@@ -73,14 +73,12 @@ pub unsafe fn create_instance(
     }
 
     // Required by Vulkan SDK on macOS since 1.3.216.
-    let flags = if cfg!(target_os = "macos") && entry.version()? >= PORTABILITY_MACOS_VERSION {
+    let flags = if cfg!(target_os = "macos")
+        && entry.try_enumerate_instance_version()?.unwrap() >= PORTABILITY_MACOS_VERSION
+    {
         log::info!("Enabling extensions for macOS portability");
-        extensions.push(
-            vk::KHR_GET_PHYSICAL_DEVICE_PROPERTIES2_EXTENSION
-                .name
-                .as_ptr(),
-        );
-        extensions.push(vk::KHR_PORTABILITY_ENUMERATION_EXTENSION.name.as_ptr());
+        extensions.push(ash::extensions::khr::GetPhysicalDeviceProperties2::name().as_ptr());
+        extensions.push(vk::KhrPortabilitySubsetFn::name().as_ptr());
         vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR
     } else {
         vk::InstanceCreateFlags::empty()
@@ -104,8 +102,12 @@ pub unsafe fn create_instance(
             vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
                 | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
         )
-        .message_type(vk::DebugUtilsMessageTypeFlagsEXT::all())
-        .user_callback(Some(debug_callback));
+        .message_type(
+            vk::DebugUtilsMessageTypeFlagsEXT::GENERAL
+                | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION
+                | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE,
+        )
+        .pfn_user_callback(Some(debug_callback));
 
     if VALIDATION_ENABLED {
         instance_info = instance_info.push_next(&mut debug_info);
@@ -113,14 +115,15 @@ pub unsafe fn create_instance(
     }
 
     let instance = entry.create_instance(&instance_info, None)?;
+    let debug_utils_loader = DebugUtils::new(&entry, &instance);
 
     let messenger = if VALIDATION_ENABLED {
-        Some(instance.create_debug_utils_messenger_ext(&debug_info, None)?)
+        Some(debug_utils_loader.create_debug_utils_messenger(&debug_info, None)?)
     } else {
         None
     };
 
-    Ok((instance, messenger))
+    Ok((instance, messenger, debug_utils_loader))
 }
 
 extern "system" fn debug_callback(
@@ -130,7 +133,7 @@ extern "system" fn debug_callback(
     _: *mut c_void,
 ) -> vk::Bool32 {
     let data = unsafe { *data };
-    let message = unsafe { CStr::from_ptr(data.message) }.to_string_lossy();
+    let message = unsafe { CStr::from_ptr(data.p_message) }.to_string_lossy();
 
     if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::ERROR {
         log::error!("({:?}) {}", type_, message);
@@ -154,8 +157,9 @@ extern "system" fn debug_callback(
 pub struct SuitabilityError(pub &'static str);
 
 pub unsafe fn pick_physical_device(
-    instance: &Instance,
+    instance: &ash::Instance,
     surface: vk::SurfaceKHR,
+    surface_loader: &Surface,
 ) -> Result<(
     vk::PhysicalDevice,
     QueueFamilyIndices,
@@ -165,14 +169,17 @@ pub unsafe fn pick_physical_device(
     for physical_device in instance.enumerate_physical_devices()? {
         let properties = instance.get_physical_device_properties(physical_device);
 
-        match check_physical_device(instance, surface, physical_device) {
+        match check_physical_device(instance, surface, surface_loader, physical_device) {
             Err(error) => log::warn!(
-                "Skipping physical device (`{}`): {}",
+                "Skipping physical device (`{:?}`): {}",
                 properties.device_name,
                 error
             ),
             Ok((indices, swapchain_support)) => {
-                log::info!("Selected physical device (`{}`).", properties.device_name);
+                log::info!(
+                    "Selected physical device (`{:?}`).",
+                    mnt_to_string(&properties.device_name)
+                );
                 let msaa_samples = get_max_msaa_samples(instance, physical_device);
                 return Ok((physical_device, indices, swapchain_support, msaa_samples));
             }
@@ -182,9 +189,20 @@ pub unsafe fn pick_physical_device(
     Err(anyhow!("Failed to find suitable physical device."))
 }
 
+unsafe fn mnt_to_string(bytes: &[i8]) -> String {
+    CStr::from_bytes_until_nul(std::mem::transmute(bytes))
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string()
+
+    // std::str::from_utf8_unchecked(std::mem::transmute(bytes)).to_string()
+}
+
 unsafe fn check_physical_device(
-    instance: &Instance,
+    instance: &ash::Instance,
     surface: vk::SurfaceKHR,
+    surface_loader: &Surface,
     physical_device: vk::PhysicalDevice,
 ) -> Result<(QueueFamilyIndices, SwapchainSupport)> {
     let properties = instance.get_physical_device_properties(physical_device);
@@ -204,10 +222,10 @@ unsafe fn check_physical_device(
         return Err(anyhow!(SuitabilityError("No sampler anisotropy.")));
     }
 
-    let indices = QueueFamilyIndices::get(instance, surface, physical_device)?;
+    let indices = QueueFamilyIndices::get(instance, surface, surface_loader, physical_device)?;
     check_physical_device_extensions(instance, physical_device)?;
 
-    let support = SwapchainSupport::get(instance, surface, physical_device)?;
+    let support = SwapchainSupport::get(instance, surface_loader, surface, physical_device)?;
     if support.formats.is_empty() || support.present_modes.is_empty() {
         return Err(anyhow!(SuitabilityError("Insufficient swapchain support.")));
     }
@@ -216,13 +234,13 @@ unsafe fn check_physical_device(
 }
 
 unsafe fn check_physical_device_extensions(
-    instance: &Instance,
+    instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,
 ) -> Result<()> {
     let extensions = instance
-        .enumerate_device_extension_properties(physical_device, None)?
+        .enumerate_device_extension_properties(physical_device)?
         .iter()
-        .map(|e| e.extension_name)
+        .map(|e| CStr::from_ptr(e.extension_name.as_ptr()))
         .collect::<HashSet<_>>();
     if DEVICE_EXTENSIONS.iter().all(|e| extensions.contains(e)) {
         Ok(())
@@ -253,8 +271,9 @@ impl QueueFamilyIndices {
     }
 
     pub unsafe fn get(
-        instance: &Instance,
+        instance: &ash::Instance,
         surface: vk::SurfaceKHR,
+        surface_loader: &Surface,
         physical_device: vk::PhysicalDevice,
     ) -> Result<Self> {
         let properties = instance.get_physical_device_queue_family_properties(physical_device);
@@ -282,7 +301,7 @@ impl QueueFamilyIndices {
 
         let mut present = None;
         for (index, _properties) in properties.iter().enumerate() {
-            if instance.get_physical_device_surface_support_khr(
+            if surface_loader.get_physical_device_surface_support(
                 physical_device,
                 index as u32,
                 surface,
@@ -318,16 +337,18 @@ pub struct SwapchainSupport {
 
 impl SwapchainSupport {
     pub unsafe fn get(
-        instance: &Instance,
+        instance: &ash::Instance,
+        surface_loader: &Surface,
         surface: vk::SurfaceKHR,
         physical_device: vk::PhysicalDevice,
     ) -> Result<Self> {
         Ok(Self {
-            capabilities: instance
-                .get_physical_device_surface_capabilities_khr(physical_device, surface)?,
-            formats: instance.get_physical_device_surface_formats_khr(physical_device, surface)?,
-            present_modes: instance
-                .get_physical_device_surface_present_modes_khr(physical_device, surface)?,
+            capabilities: surface_loader
+                .get_physical_device_surface_capabilities(physical_device, surface)?,
+            formats: surface_loader
+                .get_physical_device_surface_formats(physical_device, surface)?,
+            present_modes: surface_loader
+                .get_physical_device_surface_present_modes(physical_device, surface)?,
         })
     }
 }
@@ -341,10 +362,10 @@ pub struct QueueSet {
 
 pub unsafe fn create_logical_device(
     entry: &Entry,
-    instance: &Instance,
+    instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,
     indices: QueueFamilyIndices,
-) -> Result<(Device, QueueSet)> {
+) -> Result<(ash::Device, QueueSet)> {
     let mut unique_indices = HashSet::new();
     unique_indices.insert(indices.graphics);
     unique_indices.insert(indices.present);
@@ -358,6 +379,7 @@ pub unsafe fn create_logical_device(
             vk::DeviceQueueCreateInfo::builder()
                 .queue_family_index(*i)
                 .queue_priorities(queue_priorities)
+                .build()
         })
         .collect::<Vec<_>>();
 
@@ -373,8 +395,10 @@ pub unsafe fn create_logical_device(
         .collect::<Vec<_>>();
 
     // Required by Vulkan SDK on macOS since 1.3.216.
-    if cfg!(target_os = "macos") && entry.version()? >= PORTABILITY_MACOS_VERSION {
-        extensions.push(vk::KHR_PORTABILITY_SUBSET_EXTENSION.name.as_ptr());
+    if cfg!(target_os = "macos")
+        && entry.try_enumerate_instance_version()?.unwrap() >= PORTABILITY_MACOS_VERSION
+    {
+        extensions.push(vk::KhrPortabilitySubsetFn::name().as_ptr());
     }
 
     // let mut indexing_features = vk::PhysicalDeviceDescriptorIndexingFeaturesEXT::builder()
@@ -384,7 +408,7 @@ pub unsafe fn create_logical_device(
     let features = vk::PhysicalDeviceFeatures::builder().sampler_anisotropy(true);
     let info = vk::DeviceCreateInfo::builder()
         .queue_create_infos(&queue_infos)
-        .enabled_layer_names(&layers)
+        // .enabled_layer_names(&layers)
         .enabled_extension_names(&extensions)
         .enabled_features(&features);
 
@@ -449,11 +473,18 @@ fn get_swapchain_extent(window: &Window, capabilities: vk::SurfaceCapabilitiesKH
 
 pub unsafe fn create_swapchain(
     window: &Window,
-    logical_device: &Device,
+    instance: &ash::Instance,
+    logical_device: &ash::Device,
     surface: vk::SurfaceKHR,
     queue_family_indices: &QueueFamilyIndices,
     swapchain_support: &SwapchainSupport,
-) -> Result<(vk::SwapchainKHR, Vec<vk::Image>, vk::Extent2D, vk::Format)> {
+) -> Result<(
+    Swapchain,
+    vk::SwapchainKHR,
+    Vec<vk::Image>,
+    vk::Extent2D,
+    vk::Format,
+)> {
     let surface_format = get_swapchain_surface_format(&swapchain_support.formats);
     let present_mode = get_swapchain_present_mode(&swapchain_support.present_modes);
     let extent = get_swapchain_extent(window, swapchain_support.capabilities);
@@ -484,15 +515,16 @@ pub unsafe fn create_swapchain(
         .clipped(true)
         .old_swapchain(vk::SwapchainKHR::null());
 
-    let swapchain = logical_device.create_swapchain_khr(&swapchain_create_info, None)?;
-    let images = logical_device.get_swapchain_images_khr(swapchain)?;
+    let swapchain_loader = Swapchain::new(instance, logical_device);
+    let swapchain = swapchain_loader.create_swapchain(&swapchain_create_info, None)?;
+    let images = swapchain_loader.get_swapchain_images(swapchain)?;
     let extent = swapchain_create_info.image_extent;
     let format = swapchain_create_info.image_format;
-    Ok((swapchain, images, extent, format))
+    Ok((swapchain_loader, swapchain, images, extent, format))
 }
 
 pub unsafe fn create_swapchain_image_views(
-    logical_device: &Device,
+    logical_device: &ash::Device,
     images: &[vk::Image],
     swapchain_format: vk::Format,
 ) -> Result<Vec<vk::ImageView>> {
@@ -511,18 +543,20 @@ pub unsafe fn create_swapchain_image_views(
 }
 
 pub unsafe fn create_pipeline_layout(
-    logical_device: &Device,
+    logical_device: &ash::Device,
     descriptor_set_layout: vk::DescriptorSetLayout,
 ) -> Result<vk::PipelineLayout> {
     let vert_push_constant_range = vk::PushConstantRange::builder()
         .stage_flags(vk::ShaderStageFlags::VERTEX)
         .offset(0)
-        .size(64 /* 16 × 4 byte floats */);
+        .size(64 /* 16 × 4 byte floats */)
+        .build();
 
     let frag_push_constant_range = vk::PushConstantRange::builder()
         .stage_flags(vk::ShaderStageFlags::FRAGMENT)
         .offset(64)
-        .size(16 /* 2 x 4 byte ints */);
+        .size(16 /* 2 x 4 byte ints */)
+        .build();
 
     let set_layouts = &[descriptor_set_layout];
     let push_constant_ranges = &[vert_push_constant_range, frag_push_constant_range];
@@ -535,14 +569,12 @@ pub unsafe fn create_pipeline_layout(
 }
 
 pub unsafe fn create_shader_module(
-    logical_device: &Device,
-    bytecode: &[u8],
+    logical_device: &ash::Device,
+    bytecode: &Vec<u32>,
 ) -> Result<vk::ShaderModule> {
-    let bytecode = Bytecode::new(bytecode).unwrap();
+    // let bytecode = Bytecode::new(bytecode).unwrap();
 
-    let info = vk::ShaderModuleCreateInfo::builder()
-        .code_size(bytecode.code_size())
-        .code(bytecode.code());
+    let info = vk::ShaderModuleCreateInfo::builder().code(bytecode);
 
     logical_device
         .create_shader_module(&info, None)
@@ -550,8 +582,8 @@ pub unsafe fn create_shader_module(
 }
 
 pub unsafe fn create_render_pass(
-    instance: &Instance,
-    logical_device: &Device,
+    instance: &ash::Instance,
+    logical_device: &ash::Device,
     physical_device: vk::PhysicalDevice,
     swapchain: &g_objects::Swapchain,
     msaa_samples: vk::SampleCountFlags,
@@ -564,7 +596,8 @@ pub unsafe fn create_render_pass(
         .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
         .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
         .initial_layout(vk::ImageLayout::UNDEFINED)
-        .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+        .build();
 
     let depth_stencil_attachment = vk::AttachmentDescription::builder()
         .format(get_depth_format(instance, physical_device)?)
@@ -574,29 +607,34 @@ pub unsafe fn create_render_pass(
         .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
         .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
         .initial_layout(vk::ImageLayout::UNDEFINED)
-        .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+        .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+        .build();
 
     let color_resolve_attachment = vk::AttachmentDescription::builder()
         .format(swapchain.format)
-        .samples(vk::SampleCountFlags::_1)
+        .samples(vk::SampleCountFlags::TYPE_1)
         .load_op(vk::AttachmentLoadOp::DONT_CARE)
         .store_op(vk::AttachmentStoreOp::STORE)
         .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
         .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
         .initial_layout(vk::ImageLayout::UNDEFINED)
-        .final_layout(vk::ImageLayout::PRESENT_SRC_KHR);
+        .final_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+        .build();
 
     let color_attachment_ref = vk::AttachmentReference::builder()
         .attachment(0)
-        .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+        .build();
 
     let depth_stencil_attachment_ref = vk::AttachmentReference::builder()
         .attachment(1)
-        .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+        .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+        .build();
 
     let color_resolve_attachment_ref = vk::AttachmentReference::builder()
         .attachment(2)
-        .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+        .build();
 
     let color_attachments = &[color_attachment_ref];
     let resolve_attachments = &[color_resolve_attachment_ref];
@@ -604,7 +642,8 @@ pub unsafe fn create_render_pass(
         .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
         .color_attachments(color_attachments)
         .depth_stencil_attachment(&depth_stencil_attachment_ref)
-        .resolve_attachments(resolve_attachments);
+        .resolve_attachments(resolve_attachments)
+        .build();
 
     let dependency = vk::SubpassDependency::builder()
         .src_subpass(vk::SUBPASS_EXTERNAL)
@@ -621,7 +660,8 @@ pub unsafe fn create_render_pass(
         .dst_access_mask(
             vk::AccessFlags::COLOR_ATTACHMENT_WRITE
                 | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
-        );
+        )
+        .build();
 
     let attachments = &[
         color_attachment,
@@ -641,7 +681,7 @@ pub unsafe fn create_render_pass(
 }
 
 pub unsafe fn create_framebuffers(
-    device: &Device,
+    device: &ash::Device,
     render_pass: vk::RenderPass,
     swapchain: &g_objects::Swapchain,
     depth_image_view: vk::ImageView,
@@ -667,7 +707,7 @@ pub unsafe fn create_framebuffers(
 }
 
 pub unsafe fn create_command_pool_set(
-    logical_device: &Device,
+    logical_device: &ash::Device,
     queue_family_indices: &QueueFamilyIndices,
 ) -> Result<g_types::CommandPoolSet> {
     let present = create_command_pool(logical_device, queue_family_indices.present)?;
@@ -681,7 +721,7 @@ pub unsafe fn create_command_pool_set(
 }
 
 pub unsafe fn create_command_pool_sets(
-    logical_device: &Device,
+    logical_device: &ash::Device,
     swapchain_images_count: u32,
     queue_family_indices: &QueueFamilyIndices,
 ) -> Result<Vec<g_types::CommandPoolSet>> {
@@ -691,7 +731,7 @@ pub unsafe fn create_command_pool_sets(
 }
 
 unsafe fn create_command_pool(
-    logical_device: &Device,
+    logical_device: &ash::Device,
     queue_family_index: u32,
 ) -> Result<vk::CommandPool> {
     let info = vk::CommandPoolCreateInfo::builder()
@@ -701,7 +741,7 @@ unsafe fn create_command_pool(
     Ok(logical_device.create_command_pool(&info, None)?)
 }
 pub unsafe fn create_command_buffers(
-    device: &Device,
+    device: &ash::Device,
     command_pool_sets: &[g_types::CommandPoolSet],
     swapchain_images_count: usize,
 ) -> Result<Vec<vk::CommandBuffer>> {
@@ -720,7 +760,7 @@ pub unsafe fn create_command_buffers(
 }
 
 pub unsafe fn create_sync_objects(
-    logical_device: &Device,
+    logical_device: &ash::Device,
     swapchain_images_count: usize,
 ) -> Result<(
     Vec<vk::Semaphore>,
@@ -769,15 +809,21 @@ pub unsafe fn create_sync_objects(
 }
 
 pub unsafe fn query_swapchain_support(
-    instance: &Instance,
     physical_device: vk::PhysicalDevice,
     surface: vk::SurfaceKHR,
+    surface_loader: &Surface,
 ) -> Result<SwapchainSupport> {
+    // let capabilities =
+    //     instance.get_physical_device_surface_capabilities_khr(physical_device, surface)?;
+    // let formats = instance.get_physical_device_surface_formats_khr(physical_device, surface)?;
+    // let present_modes =
+    //     instance.get_physical_device_surface_present_modes_khr(physical_device, surface)?;
+
     let capabilities =
-        instance.get_physical_device_surface_capabilities_khr(physical_device, surface)?;
-    let formats = instance.get_physical_device_surface_formats_khr(physical_device, surface)?;
+        surface_loader.get_physical_device_surface_capabilities(physical_device, surface)?;
+    let formats = surface_loader.get_physical_device_surface_formats(physical_device, surface)?;
     let present_modes =
-        instance.get_physical_device_surface_present_modes_khr(physical_device, surface)?;
+        surface_loader.get_physical_device_surface_present_modes(physical_device, surface)?;
 
     Ok(SwapchainSupport {
         capabilities,
@@ -787,7 +833,7 @@ pub unsafe fn query_swapchain_support(
 }
 
 pub unsafe fn get_memory_type_index(
-    instance: &Instance,
+    instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,
     properties: vk::MemoryPropertyFlags,
     requirements: vk::MemoryRequirements,
@@ -804,7 +850,7 @@ pub unsafe fn get_memory_type_index(
 }
 
 pub unsafe fn create_buffer(
-    logical_device: &Device,
+    logical_device: &ash::Device,
     size: vk::DeviceSize,
     usage: vk::BufferUsageFlags,
 ) -> Result<vk::Buffer> {
@@ -819,8 +865,8 @@ pub unsafe fn create_buffer(
 }
 
 pub unsafe fn create_buffer_and_memory(
-    instance: &Instance,
-    device: &Device,
+    instance: &ash::Instance,
+    device: &ash::Device,
     physical_device: vk::PhysicalDevice,
     size: vk::DeviceSize,
     usage: vk::BufferUsageFlags,
@@ -847,7 +893,7 @@ pub unsafe fn create_buffer_and_memory(
 }
 
 pub unsafe fn create_memory_with_mem_type_index(
-    device: &Device,
+    device: &ash::Device,
     size: vk::DeviceSize,
     memory_type_index: u32,
 ) -> Result<vk::DeviceMemory> {
@@ -861,7 +907,7 @@ pub unsafe fn create_memory_with_mem_type_index(
 }
 
 pub unsafe fn copy_buffer(
-    logical_device: &Device,
+    logical_device: &ash::Device,
     queue: vk::Queue,
     command_pool: vk::CommandPool,
     source: vk::Buffer,
@@ -875,7 +921,8 @@ pub unsafe fn copy_buffer(
     let regions = vk::BufferCopy::builder()
         .size(size)
         .src_offset(src_offset)
-        .dst_offset(dst_offset);
+        .dst_offset(dst_offset)
+        .build();
     logical_device.cmd_copy_buffer(command_buffer, source, destination, &[regions]);
 
     end_single_time_commands(logical_device, command_pool, queue, command_buffer)?;
@@ -884,9 +931,9 @@ pub unsafe fn copy_buffer(
 }
 
 pub unsafe fn get_memory_info(
-    instance: &Instance,
+    instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,
-    logical_device: &Device,
+    logical_device: &ash::Device,
     buffer: vk::Buffer,
     size: u64,
     properties: vk::MemoryPropertyFlags,
@@ -909,7 +956,7 @@ pub fn align_up(value: u64, alignment: u64) -> u64 {
 }
 
 pub unsafe fn create_descriptor_sets(
-    logical_device: &Device,
+    logical_device: &ash::Device,
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
     swapchain_images_count: usize,
@@ -925,8 +972,8 @@ pub unsafe fn create_descriptor_sets(
 }
 
 pub unsafe fn create_image(
-    instance: &Instance,
-    logical_device: &Device,
+    instance: &ash::Instance,
+    logical_device: &ash::Device,
     physical_device: vk::PhysicalDevice,
     width: u32,
     height: u32,
@@ -938,7 +985,7 @@ pub unsafe fn create_image(
     properties: vk::MemoryPropertyFlags,
 ) -> Result<(vk::Image, vk::DeviceMemory)> {
     let info = vk::ImageCreateInfo::builder()
-        .image_type(vk::ImageType::_2D)
+        .image_type(vk::ImageType::TYPE_2D)
         .extent(vk::Extent3D {
             width,
             height,
@@ -974,7 +1021,7 @@ pub unsafe fn create_image(
 }
 
 unsafe fn begin_single_time_commands(
-    logical_device: &Device,
+    logical_device: &ash::Device,
     command_pool: vk::CommandPool,
 ) -> Result<vk::CommandBuffer> {
     let info = vk::CommandBufferAllocateInfo::builder()
@@ -993,7 +1040,7 @@ unsafe fn begin_single_time_commands(
 }
 
 unsafe fn end_single_time_commands(
-    logical_device: &Device,
+    logical_device: &ash::Device,
     command_pool: vk::CommandPool,
     queue: vk::Queue,
     command_buffer: vk::CommandBuffer,
@@ -1001,7 +1048,9 @@ unsafe fn end_single_time_commands(
     logical_device.end_command_buffer(command_buffer)?;
 
     let command_buffers = &[command_buffer];
-    let info = vk::SubmitInfo::builder().command_buffers(command_buffers);
+    let info = vk::SubmitInfo::builder()
+        .command_buffers(command_buffers)
+        .build();
 
     logical_device.queue_submit(queue, &[info], vk::Fence::null())?;
     logical_device.queue_wait_idle(queue)?;
@@ -1012,7 +1061,7 @@ unsafe fn end_single_time_commands(
 }
 
 pub unsafe fn transition_image_layout(
-    logical_device: &Device,
+    logical_device: &ash::Device,
     command_pool: vk::CommandPool,
     queue: vk::Queue,
     image: vk::Image,
@@ -1065,7 +1114,8 @@ pub unsafe fn transition_image_layout(
         .base_mip_level(0)
         .level_count(mip_levels)
         .base_array_layer(0)
-        .layer_count(1);
+        .layer_count(1)
+        .build();
 
     let barrier = vk::ImageMemoryBarrier::builder()
         .old_layout(old_layout)
@@ -1075,7 +1125,8 @@ pub unsafe fn transition_image_layout(
         .image(image)
         .subresource_range(subresource)
         .src_access_mask(src_access_mask)
-        .dst_access_mask(dst_access_mask);
+        .dst_access_mask(dst_access_mask)
+        .build();
 
     logical_device.cmd_pipeline_barrier(
         command_buffer,
@@ -1091,7 +1142,7 @@ pub unsafe fn transition_image_layout(
 }
 
 pub unsafe fn copy_buffer_to_image(
-    logical_device: &Device,
+    logical_device: &ash::Device,
     command_pool: vk::CommandPool,
     queue: vk::Queue,
     buffer: vk::Buffer,
@@ -1106,7 +1157,8 @@ pub unsafe fn copy_buffer_to_image(
         .aspect_mask(vk::ImageAspectFlags::COLOR)
         .mip_level(0)
         .base_array_layer(0)
-        .layer_count(1);
+        .layer_count(1)
+        .build();
 
     let region = vk::BufferImageCopy::builder()
         .buffer_offset(offset)
@@ -1118,7 +1170,8 @@ pub unsafe fn copy_buffer_to_image(
             width,
             height,
             depth: 1,
-        });
+        })
+        .build();
 
     logical_device.cmd_copy_buffer_to_image(
         command_buffer,
@@ -1132,7 +1185,7 @@ pub unsafe fn copy_buffer_to_image(
 }
 
 pub unsafe fn create_image_view(
-    logical_device: &Device,
+    logical_device: &ash::Device,
     image: vk::Image,
     mip_levels: u32,
     format: vk::Format,
@@ -1143,11 +1196,12 @@ pub unsafe fn create_image_view(
         .base_mip_level(0)
         .level_count(mip_levels)
         .base_array_layer(0)
-        .layer_count(1);
+        .layer_count(1)
+        .build();
 
     let info = vk::ImageViewCreateInfo::builder()
         .image(image)
-        .view_type(vk::ImageViewType::_2D)
+        .view_type(vk::ImageViewType::TYPE_2D)
         .format(format)
         .subresource_range(subresource_range);
 
@@ -1157,7 +1211,7 @@ pub unsafe fn create_image_view(
 }
 
 pub unsafe fn create_texture_image_view(
-    logical_device: &Device,
+    logical_device: &ash::Device,
     texture_image: vk::Image,
     mip_levels: u32,
     format: vk::Format,
@@ -1171,7 +1225,7 @@ pub unsafe fn create_texture_image_view(
     )
 }
 
-pub unsafe fn create_texture_sampler(device: &Device, mip_levels: u32) -> Result<vk::Sampler> {
+pub unsafe fn create_texture_sampler(device: &ash::Device, mip_levels: u32) -> Result<vk::Sampler> {
     let info = vk::SamplerCreateInfo::builder()
         .mag_filter(vk::Filter::LINEAR)
         .min_filter(vk::Filter::LINEAR)
@@ -1195,8 +1249,8 @@ pub unsafe fn create_texture_sampler(device: &Device, mip_levels: u32) -> Result
 }
 
 pub unsafe fn create_depth_objects(
-    instance: &Instance,
-    logical_device: &Device,
+    instance: &ash::Instance,
+    logical_device: &ash::Device,
     physical_device: vk::PhysicalDevice,
     extent: vk::Extent2D,
     command_pool_set: &g_types::CommandPoolSet,
@@ -1246,7 +1300,7 @@ pub unsafe fn create_depth_objects(
 }
 
 unsafe fn get_supported_format(
-    instance: &Instance,
+    instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,
     candidates: &[vk::Format],
     tiling: vk::ImageTiling,
@@ -1267,7 +1321,7 @@ unsafe fn get_supported_format(
 }
 
 unsafe fn get_depth_format(
-    instance: &Instance,
+    instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,
 ) -> Result<vk::Format> {
     let candidates = &[
@@ -1332,8 +1386,8 @@ pub fn load_model(path: &str) -> Result<(Vec<g_types::Vertex>, Vec<u32>)> {
 }
 
 pub unsafe fn generate_mipmaps(
-    instance: &Instance,
-    logical_device: &Device,
+    instance: &ash::Instance,
+    logical_device: &ash::Device,
     physical_device: vk::PhysicalDevice,
     command_pool: vk::CommandPool,
     queue: vk::Queue,
@@ -1359,13 +1413,15 @@ pub unsafe fn generate_mipmaps(
         .aspect_mask(vk::ImageAspectFlags::COLOR)
         .base_array_layer(0)
         .layer_count(1)
-        .level_count(1);
+        .level_count(1)
+        .build();
 
     let mut barrier = vk::ImageMemoryBarrier::builder()
         .image(image)
         .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
         .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .subresource_range(subresource);
+        .subresource_range(subresource)
+        .build();
 
     let mut mip_width = width;
     let mut mip_height = height;
@@ -1391,13 +1447,15 @@ pub unsafe fn generate_mipmaps(
             .aspect_mask(vk::ImageAspectFlags::COLOR)
             .mip_level(i - 1)
             .base_array_layer(0)
-            .layer_count(1);
+            .layer_count(1)
+            .build();
 
         let dst_subresource = vk::ImageSubresourceLayers::builder()
             .aspect_mask(vk::ImageAspectFlags::COLOR)
             .mip_level(i)
             .base_array_layer(0)
-            .layer_count(1);
+            .layer_count(1)
+            .build();
 
         let blit = vk::ImageBlit::builder()
             .src_offsets([
@@ -1417,7 +1475,8 @@ pub unsafe fn generate_mipmaps(
                     z: 1,
                 },
             ])
-            .dst_subresource(dst_subresource);
+            .dst_subresource(dst_subresource)
+            .build();
 
         logical_device.cmd_blit_image(
             command_buffer,
@@ -1475,29 +1534,30 @@ pub unsafe fn generate_mipmaps(
 }
 
 pub unsafe fn get_max_msaa_samples(
-    instance: &Instance,
+    instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,
 ) -> vk::SampleCountFlags {
     let properties = instance.get_physical_device_properties(physical_device);
     let counts = properties.limits.framebuffer_color_sample_counts
         & properties.limits.framebuffer_depth_sample_counts;
     [
-        vk::SampleCountFlags::_64,
-        vk::SampleCountFlags::_32,
-        vk::SampleCountFlags::_16,
-        vk::SampleCountFlags::_8,
-        vk::SampleCountFlags::_4,
-        vk::SampleCountFlags::_2,
+        vk::SampleCountFlags::TYPE_64,
+        vk::SampleCountFlags::TYPE_32,
+        vk::SampleCountFlags::TYPE_16,
+        vk::SampleCountFlags::TYPE_8,
+        vk::SampleCountFlags::TYPE_4,
+        vk::SampleCountFlags::TYPE_2,
+        vk::SampleCountFlags::TYPE_1,
     ]
     .iter()
     .cloned()
     .find(|c| counts.contains(*c))
-    .unwrap_or(vk::SampleCountFlags::_1)
+    .unwrap_or(vk::SampleCountFlags::TYPE_1)
 }
 
 pub unsafe fn create_color_objects(
-    instance: &Instance,
-    logical_device: &Device,
+    instance: &ash::Instance,
+    logical_device: &ash::Device,
     physical_device: vk::PhysicalDevice,
     swapchain: &g_objects::Swapchain,
     msaa_samples: vk::SampleCountFlags,
@@ -1525,4 +1585,17 @@ pub unsafe fn create_color_objects(
     )?;
 
     Ok((color_image, color_image_memory, color_image_view))
+}
+
+pub trait IsNull {
+    fn is_null(&self) -> bool;
+}
+
+impl<T> IsNull for T
+where
+    T: ash::vk::Handle + Copy,
+{
+    fn is_null(&self) -> bool {
+        self.as_raw() == 0
+    }
 }

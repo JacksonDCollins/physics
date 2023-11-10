@@ -1,6 +1,7 @@
 use crate::graphics::utils as g_utils;
 use crate::{controller, graphics, input};
 use anyhow::{anyhow, Result};
+use ash::extensions::khr::Surface;
 // use vulkanalia::prelude::v1_2::*;
 // use vulkanalia::vk::ExtDebugUtilsExtension;
 // use vulkanalia::{
@@ -8,16 +9,18 @@ use anyhow::{anyhow, Result};
 //     Entry,
 // };
 use ash::{vk, Entry};
+use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
+// use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::event::WindowEvent;
-use winit::event_loop::{self, EventLoop};
+use winit::event_loop::EventLoop;
 use winit::window::Window;
 
 pub struct App {
-    entry: Entry,
-    instance: vk::Instance,
-    logical_device: vk::Device,
+    instance: ash::Instance,
+    logical_device: ash::Device,
     physical_device: vk::PhysicalDevice,
     dbg_messenger: Option<vk::DebugUtilsMessengerEXT>,
+    debug_utils_loader: ash::extensions::ext::DebugUtils,
     render_engine: graphics::engine::RenderEngine,
     pub input_engine: input::engine::InputEngine,
     model_manager: graphics::objects::ModelManager,
@@ -28,15 +31,23 @@ pub struct App {
 }
 
 impl App {
-    pub unsafe fn create(window: &Window, event_loop: EventLoop<()>) -> Result<Self> {
+    pub unsafe fn create(window: &Window, event_loop: &EventLoop<()>) -> Result<Self> {
         // let loader = LibloadingLoader::new(LIBRARY)?;
         // let entry = Entry::new(loader).map_err(|e| anyhow!("{}", e))?;
         let entry = Entry::linked();
-        let (instance, dbg_messenger) =
-            graphics::utils::create_instance(window, &entry, event_loop)?;
-        let surface = vulkanalia::window::create_surface(&instance, &window, &window)?;
+        let (instance, dbg_messenger, debug_utils_loader) =
+            graphics::utils::create_instance(&entry, event_loop)?;
+        let surface = ash_window::create_surface(
+            &entry,
+            &instance,
+            window.raw_display_handle(),
+            window.raw_window_handle(),
+            None,
+        )?;
+        let surface_loader = Surface::new(&entry, &instance);
+
         let (physical_device, queue_family_indices, swapchain_support, msaa_samples) =
-            graphics::utils::pick_physical_device(&instance, surface)?;
+            graphics::utils::pick_physical_device(&instance, surface, &surface_loader)?;
 
         let (logical_device, queue_set) = graphics::utils::create_logical_device(
             &entry,
@@ -46,13 +57,6 @@ impl App {
         )?;
 
         let mut model_manager = graphics::objects::ModelManager::create()?;
-
-        // let texture = g_objects::Texture::create("resources/viking_room.png")?;
-
-        // let texture2 = g_objects::Texture::create("resources/texture.png")?;
-
-        // texture_engine.add_texture(texture);
-        // texture_engine.add_texture(texture2);
 
         let scene = graphics::objects::Scene::create()?;
 
@@ -64,6 +68,7 @@ impl App {
             &logical_device,
             physical_device,
             surface,
+            surface_loader,
             queue_set,
             queue_family_indices,
             swapchain_support,
@@ -76,11 +81,11 @@ impl App {
         let camera = controller::camera::Camera::create();
 
         Ok(Self {
-            entry,
             instance,
             logical_device,
             physical_device,
             dbg_messenger,
+            debug_utils_loader,
             render_engine,
             input_engine,
             model_manager,
@@ -137,8 +142,8 @@ impl App {
 
         self.logical_device.destroy_device(None);
         self.dbg_messenger.iter().for_each(|msger| {
-            self.instance
-                .destroy_debug_utils_messenger_ext(*msger, None)
+            self.debug_utils_loader
+                .destroy_debug_utils_messenger(*msger, None)
         });
         self.instance.destroy_instance(None);
     }

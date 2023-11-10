@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::ffi::CStr;
 use std::fs::File;
 use std::hash::Hash;
+use std::io::Cursor;
 use std::mem::size_of;
 use std::os::raw::c_void;
 
@@ -9,16 +11,20 @@ use crate::graphics::types as g_types;
 use crate::graphics::utils as g_utils;
 use anyhow::{anyhow, Result};
 
+use ash::util::read_spv;
 use rand::distributions::uniform;
 use rand::Rng;
-use vulkanalia::prelude::v1_2::*;
-use vulkanalia::vk::KhrSwapchainExtension;
+// use vulkanalia::prelude::v1_2::*;
+// use vulkanalia::vk::KhrSwapchainExtension;
+use ash::vk;
 
 use winit::window::Window;
 
 use super::types::Vertex;
+use super::utils::IsNull;
 
 pub struct Swapchain {
+    pub swapchain_loader: ash::extensions::khr::Swapchain,
     pub swapchain: vk::SwapchainKHR,
     pub images: Vec<vk::Image>,
     pub extent: vk::Extent2D,
@@ -29,13 +35,15 @@ pub struct Swapchain {
 impl Swapchain {
     pub unsafe fn create(
         window: &Window,
-        logical_device: &Device,
+        instance: &ash::Instance,
+        logical_device: &ash::Device,
         surface: vk::SurfaceKHR,
         queue_family_indices: &g_utils::QueueFamilyIndices,
         swapchain_support: &g_utils::SwapchainSupport,
     ) -> Result<Self> {
-        let (swapchain, images, extent, format) = g_utils::create_swapchain(
+        let (swapchain_loader, swapchain, images, extent, format) = g_utils::create_swapchain(
             window,
+            instance,
             logical_device,
             surface,
             queue_family_indices,
@@ -45,6 +53,7 @@ impl Swapchain {
         let image_views = g_utils::create_swapchain_image_views(logical_device, &images, format)?;
 
         Ok(Self {
+            swapchain_loader,
             swapchain,
             images,
             extent,
@@ -53,11 +62,12 @@ impl Swapchain {
         })
     }
 
-    pub unsafe fn destroy(&self, logical_device: &Device) {
+    pub unsafe fn destroy(&self, logical_device: &ash::Device) {
         self.image_views
             .iter()
             .for_each(|image_view| logical_device.destroy_image_view(*image_view, None));
-        logical_device.destroy_swapchain_khr(self.swapchain, None);
+        self.swapchain_loader
+            .destroy_swapchain(self.swapchain, None);
     }
 }
 
@@ -71,8 +81,8 @@ pub struct Pipeline {
 
 impl Pipeline {
     pub unsafe fn create(
-        instance: &Instance,
-        logical_device: &Device,
+        instance: &ash::Instance,
+        logical_device: &ash::Device,
         physical_device: vk::PhysicalDevice,
         swapchain: &Swapchain,
         msaa_samples: vk::SampleCountFlags,
@@ -95,7 +105,7 @@ impl Pipeline {
         })
     }
 
-    pub unsafe fn destroy(&self, logical_device: &Device) {
+    pub unsafe fn destroy(&self, logical_device: &ash::Device) {
         // logical_device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
         // logical_device.destroy_descriptor_pool(self.descriptor_pool, None);
         // logical_device.destroy_pipeline(self.pipeline, None);
@@ -125,12 +135,12 @@ pub struct Presenter {
 
 impl Presenter {
     pub unsafe fn create(
-        logical_device: &Device,
+        logical_device: &ash::Device,
         swapchain: &Swapchain,
         pipeline: &Pipeline,
         queue_family_indices: &g_utils::QueueFamilyIndices,
         model_manager: &mut ModelManager,
-        instance: &Instance,
+        instance: &ash::Instance,
         physical_device: vk::PhysicalDevice,
         queue_set: &g_utils::QueueSet,
         msaa_samples: vk::SampleCountFlags,
@@ -238,7 +248,7 @@ impl Presenter {
         })
     }
 
-    pub unsafe fn destroy(&self, logical_device: &Device) {
+    pub unsafe fn destroy(&self, logical_device: &ash::Device) {
         self.in_flight_fences
             .iter()
             .for_each(|fence| logical_device.destroy_fence(*fence, None));
@@ -306,12 +316,12 @@ impl InstanceBuffer {
         self.size
     }
 
-    pub unsafe fn destroy(&mut self, logical_device: &Device) {
+    pub unsafe fn destroy(&mut self, logical_device: &ash::Device) {
         logical_device.destroy_buffer(self.buffer, None);
         self.changed = true;
     }
 
-    pub unsafe fn create_buffer(&mut self, logical_device: &Device) -> Result<()> {
+    pub unsafe fn create_buffer(&mut self, logical_device: &ash::Device) -> Result<()> {
         if self.buffer.is_null() {
             self.buffer = g_utils::create_buffer(
                 logical_device,
@@ -357,12 +367,12 @@ impl VertexBuffer {
         self.buffer
     }
 
-    pub unsafe fn destroy(&mut self, logical_device: &Device) {
+    pub unsafe fn destroy(&mut self, logical_device: &ash::Device) {
         logical_device.destroy_buffer(self.buffer, None);
         self.changed = true;
     }
 
-    pub unsafe fn create_buffer(&mut self, logical_device: &Device) -> Result<()> {
+    pub unsafe fn create_buffer(&mut self, logical_device: &ash::Device) -> Result<()> {
         if self.buffer.is_null() {
             self.buffer = g_utils::create_buffer(
                 logical_device,
@@ -388,7 +398,7 @@ pub struct UniformBuffer {
 
 impl UniformBuffer {
     pub unsafe fn create(
-        _logical_device: &Device,
+        _logical_device: &ash::Device,
         ubo: g_types::UniformBufferObject,
     ) -> Result<Self> {
         let size = std::mem::size_of::<g_types::UniformBufferObject>() as u64;
@@ -410,7 +420,7 @@ impl UniformBuffer {
         self.size
     }
 
-    pub unsafe fn destroy(&mut self, logical_device: &Device) {
+    pub unsafe fn destroy(&mut self, logical_device: &ash::Device) {
         logical_device.destroy_buffer(self.buffer, None);
         self.changed = true;
     }
@@ -419,7 +429,7 @@ impl UniformBuffer {
         self.ubo = ubo;
     }
 
-    pub unsafe fn create_buffer(&mut self, logical_device: &Device) -> Result<()> {
+    pub unsafe fn create_buffer(&mut self, logical_device: &ash::Device) -> Result<()> {
         if self.buffer.is_null() {
             self.buffer = g_utils::create_buffer(
                 logical_device,
@@ -468,12 +478,12 @@ impl IndexBuffer {
         self.indices.len() as u32
     }
 
-    pub unsafe fn destroy(&mut self, logical_device: &Device) {
+    pub unsafe fn destroy(&mut self, logical_device: &ash::Device) {
         logical_device.destroy_buffer(self.buffer, None);
         self.changed = true;
     }
 
-    pub unsafe fn create_buffer(&mut self, logical_device: &Device) -> Result<()> {
+    pub unsafe fn create_buffer(&mut self, logical_device: &ash::Device) -> Result<()> {
         if self.buffer.is_null() {
             self.buffer = g_utils::create_buffer(
                 logical_device,
@@ -526,8 +536,8 @@ impl BufferMemoryAllocator {
     }
 
     unsafe fn create_and_map_staging_buffer_and_memory(
-        instance: &Instance,
-        logical_device: &Device,
+        instance: &ash::Instance,
+        logical_device: &ash::Device,
         physical_device: vk::PhysicalDevice,
         size: u64,
     ) -> Result<(vk::Buffer, vk::DeviceMemory, *mut c_void)> {
@@ -571,8 +581,8 @@ impl BufferMemoryAllocator {
 
     pub unsafe fn create_memories(
         &mut self,
-        instance: &Instance,
-        logical_device: &Device,
+        instance: &ash::Instance,
+        logical_device: &ash::Device,
         physical_device: vk::PhysicalDevice,
         size: u64,
     ) -> Result<()> {
@@ -630,7 +640,7 @@ impl BufferMemoryAllocator {
 
     pub unsafe fn allocate_memory(
         &mut self,
-        logical_device: &Device,
+        logical_device: &ash::Device,
         queue_set: &g_utils::QueueSet,
         command_pool_set: g_types::CommandPoolSet,
         models: &mut [&mut Model],
@@ -813,7 +823,7 @@ impl BufferMemoryAllocator {
         Ok(())
     }
 
-    pub unsafe fn destroy(&mut self, logical_device: &Device) {
+    pub unsafe fn destroy(&mut self, logical_device: &ash::Device) {
         self.destroy_buffers(logical_device);
 
         logical_device.destroy_buffer(self.vertex_index_buffer, None);
@@ -830,7 +840,7 @@ impl BufferMemoryAllocator {
         logical_device.free_memory(self.uniform_memory, None);
     }
 
-    pub unsafe fn destroy_buffers(&mut self, logical_device: &Device) {
+    pub unsafe fn destroy_buffers(&mut self, logical_device: &ash::Device) {
         self.uniform_buffers_to_allocate
             .iter_mut()
             .filter(|buffer| !buffer.buffer.is_null())
@@ -839,7 +849,7 @@ impl BufferMemoryAllocator {
 
     pub unsafe fn create_buffers(
         &mut self,
-        logical_device: &Device,
+        logical_device: &ash::Device,
         models: &mut HashMap<String, Model>,
     ) -> Result<()> {
         for model in models.values_mut() {
@@ -878,8 +888,8 @@ impl TextureMemoryAllocator {
     }
 
     unsafe fn create_and_map_staging_buffer_and_memory(
-        instance: &Instance,
-        logical_device: &Device,
+        instance: &ash::Instance,
+        logical_device: &ash::Device,
         physical_device: vk::PhysicalDevice,
         size: u64,
     ) -> Result<(vk::Buffer, vk::DeviceMemory, *mut c_void)> {
@@ -900,8 +910,8 @@ impl TextureMemoryAllocator {
 
     pub unsafe fn create_textures(
         &mut self,
-        instance: &Instance,
-        logical_device: &Device,
+        instance: &ash::Instance,
+        logical_device: &ash::Device,
         physical_device: vk::PhysicalDevice,
         models: &mut HashMap<&String, &mut Model>,
         // instanced_models: &mut HashMap<&String, &mut InstancedModel>,
@@ -917,8 +927,8 @@ impl TextureMemoryAllocator {
 
     pub unsafe fn allocate_memory(
         &mut self,
-        instance: &Instance,
-        logical_device: &Device,
+        instance: &ash::Instance,
+        logical_device: &ash::Device,
         physical_device: vk::PhysicalDevice,
         queue_set: &g_utils::QueueSet,
         command_pool_set: &g_types::CommandPoolSet,
@@ -1051,7 +1061,7 @@ impl TextureMemoryAllocator {
         Ok(())
     }
 
-    pub unsafe fn destroy(&mut self, logical_device: &Device) {
+    pub unsafe fn destroy(&mut self, logical_device: &ash::Device) {
         for (_, texture_memory) in self.texture_memorys.iter() {
             logical_device.free_memory(*texture_memory, None);
         }
@@ -1115,13 +1125,13 @@ impl Texture {
 
     pub unsafe fn create_image_objects(
         &mut self,
-        instance: &Instance,
-        logical_device: &Device,
+        instance: &ash::Instance,
+        logical_device: &ash::Device,
         physical_device: vk::PhysicalDevice,
     ) -> Result<()> {
         if self.image.is_null() {
             let info = vk::ImageCreateInfo::builder()
-                .image_type(vk::ImageType::_2D)
+                .image_type(vk::ImageType::TYPE_2D)
                 .extent(vk::Extent3D {
                     width: self.width,
                     height: self.height,
@@ -1137,7 +1147,7 @@ impl Texture {
                         | vk::ImageUsageFlags::TRANSFER_DST
                         | vk::ImageUsageFlags::TRANSFER_SRC,
                 )
-                .samples(vk::SampleCountFlags::_1)
+                .samples(vk::SampleCountFlags::TYPE_1)
                 .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
             self.image = logical_device.create_image(&info, None)?;
@@ -1156,7 +1166,7 @@ impl Texture {
         Ok(())
     }
 
-    pub unsafe fn destroy(&self, logical_device: &Device) {
+    pub unsafe fn destroy(&self, logical_device: &ash::Device) {
         logical_device.destroy_sampler(self.sampler, None);
         logical_device.destroy_image_view(self.image_view, None);
         logical_device.destroy_image(self.image, None);
@@ -1182,7 +1192,7 @@ impl Model {
     pub unsafe fn create(
         path: &str,
         texture_path: &str,
-        logical_device: &Device,
+        logical_device: &ash::Device,
         // msaa_samples: vk::SampleCountFlags,
         // render_pass: vk::RenderPass,
         // swapchain_images_count: u32,
@@ -1223,19 +1233,21 @@ impl Model {
     }
 
     pub unsafe fn create_descriptor_set_layout(
-        logical_device: &Device,
+        logical_device: &ash::Device,
     ) -> Result<vk::DescriptorSetLayout> {
         let ubo_binding = vk::DescriptorSetLayoutBinding::builder()
             .binding(0)
             .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
             .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::VERTEX);
+            .stage_flags(vk::ShaderStageFlags::VERTEX)
+            .build();
 
         let sampler_binding = vk::DescriptorSetLayoutBinding::builder()
             .binding(1)
             .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+            .build();
 
         let bindings = &[ubo_binding, sampler_binding];
         let info = vk::DescriptorSetLayoutCreateInfo::builder().bindings(bindings);
@@ -1247,7 +1259,7 @@ impl Model {
 
     pub unsafe fn create_descriptor_pool_and_sets(
         &mut self,
-        logical_device: &Device,
+        logical_device: &ash::Device,
         swapchain_images_count: usize,
     ) -> Result<()> {
         self.descriptor_pool =
@@ -1264,16 +1276,18 @@ impl Model {
     }
 
     pub unsafe fn create_descriptor_pool(
-        logical_device: &Device,
+        logical_device: &ash::Device,
         swapchain_images_count: u32,
     ) -> Result<vk::DescriptorPool> {
         let ubo_size = vk::DescriptorPoolSize::builder()
-            .type_(vk::DescriptorType::UNIFORM_BUFFER)
-            .descriptor_count(swapchain_images_count);
+            .ty(vk::DescriptorType::UNIFORM_BUFFER)
+            .descriptor_count(swapchain_images_count)
+            .build();
 
         let sampler_size = vk::DescriptorPoolSize::builder()
-            .type_(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(swapchain_images_count);
+            .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(swapchain_images_count)
+            .build();
 
         let pool_sizes = &[ubo_size, sampler_size];
         let info = vk::DescriptorPoolCreateInfo::builder()
@@ -1286,7 +1300,7 @@ impl Model {
     }
     pub unsafe fn update_descriptor_sets(
         &mut self,
-        logical_device: &Device,
+        logical_device: &ash::Device,
         swapchain_images_count: usize,
         uniform_buffers: &[UniformBuffer],
     ) -> Result<()> {
@@ -1294,14 +1308,16 @@ impl Model {
             let buffer_info = &[vk::DescriptorBufferInfo::builder()
                 .buffer(uniform_buffers[i].get_buffer())
                 .offset(0)
-                .range(uniform_buffers[i].get_size())];
+                .range(uniform_buffers[i].get_size())
+                .build()];
 
             let ubo_write = vk::WriteDescriptorSet::builder()
                 .dst_set(self.descriptor_sets[i])
                 .dst_binding(0)
                 .dst_array_element(0)
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .buffer_info(buffer_info);
+                .buffer_info(buffer_info)
+                .build();
 
             let image_info = &[vk::DescriptorImageInfo::builder()
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
@@ -1314,7 +1330,8 @@ impl Model {
                 .dst_binding(1)
                 .dst_array_element(0)
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(image_info);
+                .image_info(image_info)
+                .build();
 
             logical_device.update_descriptor_sets(
                 &[ubo_write, image_info_write],
@@ -1327,29 +1344,34 @@ impl Model {
 
     pub unsafe fn create_pipeline(
         &mut self,
-        logical_device: &Device,
+        logical_device: &ash::Device,
         msaa_samples: vk::SampleCountFlags,
         render_pass: vk::RenderPass,
         extent: vk::Extent2D,
     ) -> Result<()> {
-        let (vert, frag) = {
+        let (mut vert, mut frag) = {
             (
-                include_bytes!("../../shaders/instanced_vert.spv").to_vec(),
-                include_bytes!("../../shaders/instanced_frag.spv").to_vec(),
+                Cursor::new(&include_bytes!("../../shaders/instanced_vert.spv")),
+                Cursor::new(&include_bytes!("../../shaders/instanced_frag.spv")),
             )
         };
 
-        let vert_shader_module = g_utils::create_shader_module(logical_device, &vert[..])?;
-        let frag_shader_module = g_utils::create_shader_module(logical_device, &frag[..])?;
+        let vert_code = read_spv(&mut vert)?;
+        let frag_code = read_spv(&mut frag)?;
+
+        let vert_shader_module = g_utils::create_shader_module(logical_device, &vert_code)?;
+        let frag_shader_module = g_utils::create_shader_module(logical_device, &frag_code)?;
         let vert_stage = vk::PipelineShaderStageCreateInfo::builder()
             .stage(vk::ShaderStageFlags::VERTEX)
             .module(vert_shader_module)
-            .name(b"main\0");
+            .name(CStr::from_bytes_with_nul_unchecked(b"main\0"))
+            .build();
 
         let frag_stage = vk::PipelineShaderStageCreateInfo::builder()
             .stage(vk::ShaderStageFlags::FRAGMENT)
             .module(frag_shader_module)
-            .name(b"main\0");
+            .name(CStr::from_bytes_with_nul_unchecked(b"main\0"))
+            .build();
 
         let binding_descriptions = &[
             g_types::Vertex::binding_description(),
@@ -1396,11 +1418,13 @@ impl Model {
 
         let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::builder()
             .vertex_binding_descriptions(binding_descriptions)
-            .vertex_attribute_descriptions(&attribute_descriptions);
+            .vertex_attribute_descriptions(&attribute_descriptions)
+            .build();
 
         let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::builder()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-            .primitive_restart_enable(false);
+            .primitive_restart_enable(false)
+            .build();
 
         let viewport = vk::Viewport::builder()
             .x(0.0)
@@ -1408,14 +1432,16 @@ impl Model {
             .width(extent.width as f32)
             .height(extent.height as f32)
             .min_depth(0.0)
-            .max_depth(1.0);
+            .max_depth(1.0)
+            .build();
 
         let scissor = vk::Rect2D::builder()
             .offset(vk::Offset2D { x: 0, y: 0 })
             .extent(vk::Extent2D {
                 width: extent.width,
                 height: extent.height,
-            });
+            })
+            .build();
 
         let viewports = &[viewport];
         let scissors = &[scissor];
@@ -1439,21 +1465,24 @@ impl Model {
             .depth_bounds_test_enable(false)
             .min_depth_bounds(0.0) // Optional.
             .max_depth_bounds(1.0) // Optional.
-            .stencil_test_enable(false); // Optional.
+            .stencil_test_enable(false)
+            .build(); // Optional.
 
         let multisample_state = vk::PipelineMultisampleStateCreateInfo::builder()
             .sample_shading_enable(false)
-            .rasterization_samples(msaa_samples);
+            .rasterization_samples(msaa_samples)
+            .build();
 
         let attachment = vk::PipelineColorBlendAttachmentState::builder()
-            .color_write_mask(vk::ColorComponentFlags::all())
+            .color_write_mask(vk::ColorComponentFlags::RGBA)
             .blend_enable(true)
             .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
             .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
             .color_blend_op(vk::BlendOp::ADD)
             .src_alpha_blend_factor(vk::BlendFactor::ONE)
             .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
-            .alpha_blend_op(vk::BlendOp::ADD);
+            .alpha_blend_op(vk::BlendOp::ADD)
+            .build();
 
         let attachments = &[attachment];
         let color_blend_state = vk::PipelineColorBlendStateCreateInfo::builder()
@@ -1474,11 +1503,12 @@ impl Model {
             .color_blend_state(&color_blend_state)
             .layout(self.pipeline_layout)
             .render_pass(render_pass)
-            .subpass(0);
+            .subpass(0)
+            .build();
 
         self.pipeline = logical_device
-            .create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)?
-            .0[0];
+            .create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)
+            .map_err(|e| anyhow!("{}", e.1))?[0];
 
         logical_device.destroy_shader_module(vert_shader_module, None);
         logical_device.destroy_shader_module(frag_shader_module, None);
@@ -1488,7 +1518,7 @@ impl Model {
 
     pub unsafe fn push_constants(
         &self,
-        logical_device: &Device,
+        logical_device: &ash::Device,
         command_buffer: vk::CommandBuffer,
         position: &g_types::Vec3,
     ) {
@@ -1527,7 +1557,7 @@ impl Model {
 
     pub unsafe fn draw_models(
         &self,
-        logical_device: &Device,
+        logical_device: &ash::Device,
         command_buffer: vk::CommandBuffer,
         image_index: usize,
     ) -> Result<()> {
@@ -1577,7 +1607,7 @@ impl Model {
         Ok(())
     }
 
-    pub unsafe fn destroy(&mut self, logical_device: &Device) {
+    pub unsafe fn destroy(&mut self, logical_device: &ash::Device) {
         self.texture.destroy(logical_device);
         self.vertex_buffer.destroy(logical_device);
         self.index_buffer.destroy(logical_device);
@@ -1610,7 +1640,7 @@ impl ModelManager {
     }
     pub unsafe fn recreate_pipelines(
         &mut self,
-        logical_device: &Device,
+        logical_device: &ash::Device,
         msaa_samples: vk::SampleCountFlags,
         render_pass: vk::RenderPass,
         extent: vk::Extent2D,
@@ -1630,7 +1660,7 @@ impl ModelManager {
 
     pub unsafe fn create_pipelines(
         &mut self,
-        logical_device: &Device,
+        logical_device: &ash::Device,
         msaa_samples: vk::SampleCountFlags,
         render_pass: vk::RenderPass,
         extent: vk::Extent2D,
@@ -1648,7 +1678,7 @@ impl ModelManager {
 
     pub unsafe fn create_descriptor_pools_and_sets(
         &mut self,
-        logical_device: &Device,
+        logical_device: &ash::Device,
         swapchain_images_count: usize,
     ) -> Result<()> {
         for model in self.models.values_mut() {
@@ -1663,7 +1693,7 @@ impl ModelManager {
 
     pub unsafe fn update_descriptor_sets(
         &mut self,
-        logical_device: &Device,
+        logical_device: &ash::Device,
         swapchain_images_count: usize,
     ) -> Result<()> {
         for model in self.models.values_mut() {
@@ -1687,8 +1717,8 @@ impl ModelManager {
 
     pub unsafe fn allocate_texture_memory(
         &mut self,
-        instance: &Instance,
-        logical_device: &Device,
+        instance: &ash::Instance,
+        logical_device: &ash::Device,
         physical_device: vk::PhysicalDevice,
         queue_set: &g_utils::QueueSet,
         command_pool_set: g_types::CommandPoolSet,
@@ -1707,8 +1737,8 @@ impl ModelManager {
     }
     pub unsafe fn create_textures(
         &mut self,
-        instance: &Instance,
-        logical_device: &Device,
+        instance: &ash::Instance,
+        logical_device: &ash::Device,
         physical_device: vk::PhysicalDevice,
     ) -> Result<()> {
         self.texture_engine.create_textures(
@@ -1725,7 +1755,7 @@ impl ModelManager {
     pub unsafe fn load_models_from_scene(
         &mut self,
         scene: &Scene,
-        logical_device: &Device,
+        logical_device: &ash::Device,
         // msaa_samples: vk::SampleCountFlags,
         // render_pass: vk::RenderPass,
         // swapchain_images_count: u32,
@@ -1754,7 +1784,7 @@ impl ModelManager {
         Ok(())
     }
 
-    pub unsafe fn create_buffers(&mut self, logical_device: &Device) -> Result<()> {
+    pub unsafe fn create_buffers(&mut self, logical_device: &ash::Device) -> Result<()> {
         self.buffer_allocator
             .create_buffers(logical_device, &mut self.models)?;
 
@@ -1766,8 +1796,8 @@ impl ModelManager {
 
     pub unsafe fn allocate_memory_for_buffers(
         &mut self,
-        instance: &Instance,
-        logical_device: &Device,
+        instance: &ash::Instance,
+        logical_device: &ash::Device,
         physical_device: vk::PhysicalDevice,
         queue_set: &g_utils::QueueSet,
         command_pool_set: g_types::CommandPoolSet,
@@ -1807,7 +1837,7 @@ impl ModelManager {
     //     self.instanced_models.insert(name.to_string(), model);
     // }
 
-    pub unsafe fn destroy(&mut self, logical_device: &Device) {
+    pub unsafe fn destroy(&mut self, logical_device: &ash::Device) {
         self.models
             .values_mut()
             .for_each(|model| model.destroy(logical_device));
@@ -1857,7 +1887,7 @@ impl Scene {
         &self,
         image_index: usize,
         model_manager: &ModelManager,
-        logical_device: &Device,
+        logical_device: &ash::Device,
         command_buffer: vk::CommandBuffer,
     ) -> Result<()> {
         for (_model_index, (model_name, _positions)) in self.models.iter().enumerate() {

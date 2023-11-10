@@ -3,22 +3,21 @@ use crate::graphics::types as g_types;
 use crate::graphics::utils as g_utils;
 
 use anyhow::{anyhow, Result};
-use std::collections::HashMap;
-use std::mem::size_of;
+use ash::extensions::khr::Surface;
+use ash::vk::Handle;
+
 use std::time::Instant;
-use vk::SurfaceKHR;
-use vulkanalia::prelude::v1_2::*;
-use vulkanalia::vk::KhrSurfaceExtension;
-use vulkanalia::vk::KhrSwapchainExtension;
-use winit::event::ElementState;
-use winit::event::KeyboardInput;
-use winit::event::VirtualKeyCode;
-use winit::event::WindowEvent;
+
+use ash::vk;
 
 use winit::window::Window;
 
+use super::utils::IsNull;
+
 pub struct RenderEngine {
-    surface: SurfaceKHR,
+    surface: vk::SurfaceKHR,
+    surface_loader: Surface,
+
     queue_set: g_utils::QueueSet,
     swapchain: g_objects::Swapchain,
     pipeline: g_objects::Pipeline,
@@ -34,10 +33,11 @@ pub struct RenderEngine {
 impl RenderEngine {
     pub unsafe fn create(
         window: &Window,
-        instance: &Instance,
-        logical_device: &Device,
+        instance: &ash::Instance,
+        logical_device: &ash::Device,
         physical_device: vk::PhysicalDevice,
-        surface: SurfaceKHR,
+        surface: vk::SurfaceKHR,
+        surface_loader: Surface,
         queue_set: g_utils::QueueSet,
         queue_family_indices: g_utils::QueueFamilyIndices,
         swapchain_support: g_utils::SwapchainSupport,
@@ -46,6 +46,7 @@ impl RenderEngine {
     ) -> Result<Self> {
         let swapchain = g_objects::Swapchain::create(
             window,
+            instance,
             logical_device,
             surface,
             &queue_family_indices,
@@ -94,6 +95,7 @@ impl RenderEngine {
 
         Ok(Self {
             surface,
+            surface_loader,
             queue_set,
             swapchain,
             pipeline,
@@ -110,8 +112,8 @@ impl RenderEngine {
     pub unsafe fn recreate_sawpchain(
         &mut self,
         window: &Window,
-        instance: &Instance,
-        logical_device: &Device,
+        instance: &ash::Instance,
+        logical_device: &ash::Device,
         physical_device: vk::PhysicalDevice,
         model_manager: &mut g_objects::ModelManager,
     ) -> Result<()> {
@@ -122,10 +124,11 @@ impl RenderEngine {
         self.presenter.destroy(logical_device);
 
         self.swapchain_support =
-            g_utils::query_swapchain_support(instance, physical_device, self.surface)?;
+            g_utils::query_swapchain_support(physical_device, self.surface, &self.surface_loader)?;
 
         self.swapchain = g_objects::Swapchain::create(
             window,
+            instance,
             logical_device,
             self.surface,
             &self.queue_family_indices,
@@ -165,9 +168,9 @@ impl RenderEngine {
     pub unsafe fn render(
         &mut self,
         window: &Window,
-        logical_device: &Device,
+        logical_device: &ash::Device,
         physical_device: vk::PhysicalDevice,
-        instance: &Instance,
+        instance: &ash::Instance,
         frame: usize,
         resized: &mut bool,
         camera: &crate::controller::camera::Camera,
@@ -180,7 +183,7 @@ impl RenderEngine {
             u64::MAX,
         )?;
 
-        let result = logical_device.acquire_next_image_khr(
+        let result = self.swapchain.swapchain_loader.acquire_next_image(
             self.swapchain.swapchain,
             u64::MAX,
             self.presenter.image_available_semaphores[frame],
@@ -189,7 +192,7 @@ impl RenderEngine {
 
         let image_index = match result {
             Ok(res) => match res {
-                (_, vk::SuccessCode::SUBOPTIMAL_KHR) => {
+                (_, true) => {
                     return self.recreate_sawpchain(
                         window,
                         instance,
@@ -200,7 +203,7 @@ impl RenderEngine {
                 }
                 (index, _) => index as usize,
             },
-            Err(vk::ErrorCode::OUT_OF_DATE_KHR) => {
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                 return self.recreate_sawpchain(
                     window,
                     instance,
@@ -233,7 +236,8 @@ impl RenderEngine {
             .wait_semaphores(wait_semaphores)
             .wait_dst_stage_mask(wait_stages)
             .command_buffers(command_buffers)
-            .signal_semaphores(signal_semaphores);
+            .signal_semaphores(signal_semaphores)
+            .build();
 
         logical_device.reset_fences(&[self.presenter.in_flight_fences[frame]])?;
 
@@ -250,10 +254,12 @@ impl RenderEngine {
             .swapchains(swapchains)
             .image_indices(image_indices);
 
-        let result = logical_device.queue_present_khr(self.queue_set.present, &present_info);
+        let result = self
+            .swapchain
+            .swapchain_loader
+            .queue_present(self.queue_set.present, &present_info);
 
-        let changed = result == Ok(vk::SuccessCode::SUBOPTIMAL_KHR)
-            || result == Err(vk::ErrorCode::OUT_OF_DATE_KHR);
+        let changed = result == Ok(true) || result == Err(vk::Result::ERROR_OUT_OF_DATE_KHR);
 
         if *resized || changed {
             *resized = false;
@@ -307,7 +313,7 @@ impl RenderEngine {
 
     unsafe fn update_command_buffer(
         &mut self,
-        logical_device: &Device,
+        logical_device: &ash::Device,
         image_index: usize,
         scene: &g_objects::Scene,
         model_manager: &g_objects::ModelManager,
@@ -324,7 +330,8 @@ impl RenderEngine {
 
         let render_area = vk::Rect2D::builder()
             .offset(vk::Offset2D::default())
-            .extent(self.swapchain.extent);
+            .extent(self.swapchain.extent)
+            .build();
 
         let color_clear_value = vk::ClearValue {
             color: vk::ClearColorValue {
@@ -360,7 +367,7 @@ impl RenderEngine {
 
     // unsafe fn update_secondary_command_buffer(
     //     &mut self,
-    //     logical_device: &Device,
+    //     logical_device: &ash::Device,
     //     image_index: usize,
     //     model_index: usize,
     //     model_name: &str,
@@ -473,12 +480,13 @@ impl RenderEngine {
     //     Ok(command_buffer)
     // }
 
-    pub unsafe fn destroy(&mut self, logical_device: &Device, instance: &Instance) {
+    pub unsafe fn destroy(&mut self, logical_device: &ash::Device, instance: &ash::Instance) {
         // self.model_manager.destroy(logical_device);
         // self.texture_engine.destroy(logical_device);
         self.presenter.destroy(logical_device);
         self.pipeline.destroy(logical_device);
         self.swapchain.destroy(logical_device);
-        instance.destroy_surface_khr(self.surface, None);
+        // instance.destroy_surface_khr(self.surface, None);
+        self.surface_loader.destroy_surface(self.surface, None);
     }
 }

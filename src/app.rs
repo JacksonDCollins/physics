@@ -1,24 +1,31 @@
+use std::sync::Arc;
+
 use crate::graphics::utils as g_utils;
 use crate::{controller, graphics, input};
 use anyhow::{anyhow, Result};
-use vulkanalia::prelude::v1_2::*;
-use vulkanalia::vk::ExtDebugUtilsExtension;
-use vulkanalia::{
-    loader::{LibloadingLoader, LIBRARY},
-    Entry,
-};
+use vulkano::device::physical::PhysicalDevice;
+use vulkano::device::Device;
+use vulkano::instance::debug::DebugUtilsMessenger;
+// use vulkanalia::prelude::v1_2::*;
+// use vulkanalia::vk::ExtDebugUtilsExtension;
+// use vulkanalia::{
+//     loader::{LibloadingLoader, LIBRARY},
+//     Entry,
+// };
+use vulkano::swapchain::Surface;
 use winit::event::WindowEvent;
+use winit::event_loop::{self, EventLoop};
 use winit::window::Window;
 
 use vulkano::instance::{Instance, InstanceCreateInfo};
 use vulkano::VulkanLibrary;
 
 pub struct App {
-    entry: Entry,
-    instance: Instance,
+    // entry: Entry,
+    instance: Arc<Instance>,
     logical_device: Device,
-    physical_device: vk::PhysicalDevice,
-    dbg_messenger: Option<vk::DebugUtilsMessengerEXT>,
+    physical_device: Arc<PhysicalDevice>,
+    dbg_messenger: Option<DebugUtilsMessenger>,
     render_engine: graphics::engine::RenderEngine,
     pub input_engine: input::engine::InputEngine,
     model_manager: graphics::objects::ModelManager,
@@ -29,32 +36,25 @@ pub struct App {
 }
 
 impl App {
-    pub unsafe fn create(window: &Window) -> Result<Self> {
+    pub unsafe fn create<T>(window: &Window, event_loop: &EventLoop<T>) -> Result<Self> {
         // let loader = LibloadingLoader::new(LIBRARY)?;
         // let entry = Entry::new(loader).map_err(|e| anyhow!("{}", e))?;
         let library = VulkanLibrary::new()?;
-        // let (instance, dbg_messenger) = graphics::utils::create_instance(window, &entry)?;
-        let (instance, dbg_messenger) = graphics::utils::create_instance(library)?;
+        let (instance, dbg_messenger) =
+            graphics::utils::create_instance(library, Surface::required_extensions(event_loop))?;
 
-        let surface = vulkanalia::window::create_surface(&instance, &window, &window)?;
+        let surface = Surface::from_window(instance, window.into())?;
         let (physical_device, queue_family_indices, swapchain_support, msaa_samples) =
-            graphics::utils::pick_physical_device(&instance, surface)?;
+            graphics::utils::pick_physical_device(instance, surface)?;
 
         let (logical_device, queue_set) = graphics::utils::create_logical_device(
-            &entry,
-            &instance,
+            instance,
             physical_device,
+            library,
             queue_family_indices,
         )?;
 
         let mut model_manager = graphics::objects::ModelManager::create()?;
-
-        // let texture = g_objects::Texture::create("resources/viking_room.png")?;
-
-        // let texture2 = g_objects::Texture::create("resources/texture.png")?;
-
-        // texture_engine.add_texture(texture);
-        // texture_engine.add_texture(texture2);
 
         let scene = graphics::objects::Scene::create()?;
 
@@ -62,7 +62,7 @@ impl App {
 
         let render_engine = graphics::engine::RenderEngine::create(
             window,
-            &instance,
+            instance,
             &logical_device,
             physical_device,
             surface,
@@ -78,7 +78,7 @@ impl App {
         let camera = controller::camera::Camera::create();
 
         Ok(Self {
-            entry,
+            // entry,
             instance,
             logical_device,
             physical_device,
@@ -128,7 +128,7 @@ impl App {
 
     pub unsafe fn device_wait_idle(&self) -> Result<()> {
         self.logical_device
-            .device_wait_idle()
+            .wait_idle()
             .map_err(|e| anyhow!("{}", e))
     }
     pub unsafe fn destroy(&mut self) {
@@ -137,12 +137,12 @@ impl App {
         self.render_engine
             .destroy(&self.logical_device, &self.instance);
 
-        self.logical_device.destroy_device(None);
-        self.dbg_messenger.iter().for_each(|msger| {
-            self.instance
-                .destroy_debug_utils_messenger_ext(*msger, None)
-        });
-        self.instance.destroy_instance(None);
+        // self.logical_device.destroy_device(None);
+        // self.dbg_messenger.iter().for_each(|msger| {
+        //     self.instance
+        //         .destroy_debug_utils_messenger_ext(*msger, None)
+        // });
+        // self.instance.destroy_instance(None);
     }
 }
 

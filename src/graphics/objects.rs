@@ -14,12 +14,22 @@ use rand::Rng;
 use vulkanalia::prelude::v1_2::*;
 use vulkanalia::vk::KhrSwapchainExtension;
 
+use vulkano::command_buffer::AutoCommandBufferBuilder;
+use vulkano::command_buffer::PrimaryAutoCommandBuffer;
+use vulkano::command_buffer::SecondaryAutoCommandBuffer;
+use vulkano::image::view::ImageView;
+use vulkano::image::Image;
+use vulkano::memory::DeviceMemory;
+use vulkano::render_pass::Framebuffer;
+use vulkano::swapchain::Swapchain;
+use vulkano::sync::fence::Fence;
+use vulkano::sync::semaphore::Semaphore;
 use winit::window::Window;
 
 use super::types::Vertex;
 
 pub struct Swapchain {
-    pub swapchain: vk::SwapchainKHR,
+    pub swapchain: Swapchain,
     pub images: Vec<vk::Image>,
     pub extent: vk::Extent2D,
     pub format: vk::Format,
@@ -29,8 +39,8 @@ pub struct Swapchain {
 impl Swapchain {
     pub unsafe fn create(
         window: &Window,
-        logical_device: &Device,
-        surface: vk::SurfaceKHR,
+        logical_device: Arc<Device>,
+        surface: vk::Arc<Surface>,
         queue_family_indices: &g_utils::QueueFamilyIndices,
         swapchain_support: &g_utils::SwapchainSupport,
     ) -> Result<Self> {
@@ -53,7 +63,7 @@ impl Swapchain {
         })
     }
 
-    pub unsafe fn destroy(&self, logical_device: &Device) {
+    pub unsafe fn destroy(&self, logical_device: Arc<Device>) {
         self.image_views
             .iter()
             .for_each(|image_view| logical_device.destroy_image_view(*image_view, None));
@@ -71,11 +81,11 @@ pub struct Pipeline {
 
 impl Pipeline {
     pub unsafe fn create(
-        instance: &Instance,
-        logical_device: &Device,
-        physical_device: vk::PhysicalDevice,
+        instance: Arc<Instance>,
+        logical_device: Arc<Device>,
+        physical_device: PhysicalDevice,
         swapchain: &Swapchain,
-        msaa_samples: vk::SampleCountFlags,
+        msaa_samples: SampleCounts,
         // model_manager: &mut ModelManager,
     ) -> Result<Self> {
         let render_pass = g_utils::create_render_pass(
@@ -95,7 +105,7 @@ impl Pipeline {
         })
     }
 
-    pub unsafe fn destroy(&self, logical_device: &Device) {
+    pub unsafe fn destroy(&self, logical_device: Arc<Device>) {
         // logical_device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
         // logical_device.destroy_descriptor_pool(self.descriptor_pool, None);
         // logical_device.destroy_pipeline(self.pipeline, None);
@@ -108,32 +118,32 @@ pub struct Presenter {
     // pub descriptor_sets: Vec<vk::DescriptorSet>,
     pub command_pool_sets: Vec<g_types::CommandPoolSet>,
     pub master_command_pool_set: g_types::CommandPoolSet,
-    depth_image: vk::Image,
-    depth_image_memory: vk::DeviceMemory,
-    depth_image_view: vk::ImageView,
-    color_image: vk::Image,
-    color_image_memory: vk::DeviceMemory,
-    color_image_view: vk::ImageView,
-    pub framebuffers: Vec<vk::Framebuffer>,
-    pub command_buffers: Vec<vk::CommandBuffer>,
-    pub secondary_command_buffers: Vec<Vec<vk::CommandBuffer>>,
-    pub image_available_semaphores: Vec<vk::Semaphore>,
-    pub render_finished_semaphores: Vec<vk::Semaphore>,
-    pub in_flight_fences: Vec<vk::Fence>,
-    pub images_in_flight: Vec<vk::Fence>,
+    depth_image: Image,
+    depth_image_memory: DeviceMemory,
+    depth_image_view: ImageView,
+    color_image: Image,
+    color_image_memory: DeviceMemory,
+    color_image_view: ImageView,
+    pub framebuffers: Vec<Framebuffer>,
+    pub command_buffers: Vec<PrimaryAutoCommandBuffer>,
+    pub secondary_command_buffers: Vec<Vec<SecondaryAutoCommandBuffer>>,
+    pub image_available_semaphores: Vec<Semaphore>,
+    pub render_finished_semaphores: Vec<Semaphore>,
+    pub in_flight_fences: Vec<Fence>,
+    pub images_in_flight: Vec<Fence>,
 }
 
 impl Presenter {
     pub unsafe fn create(
-        logical_device: &Device,
+        logical_device: Arc<Device>,
         swapchain: &Swapchain,
         pipeline: &Pipeline,
         queue_family_indices: &g_utils::QueueFamilyIndices,
         model_manager: &mut ModelManager,
-        instance: &Instance,
-        physical_device: vk::PhysicalDevice,
+        instance: Arc<Instance>,
+        physical_device: PhysicalDevice,
         queue_set: &g_utils::QueueSet,
-        msaa_samples: vk::SampleCountFlags,
+        msaa_samples: SampleCounts,
     ) -> Result<Self> {
         // let descriptor_sets = g_utils::create_descriptor_sets(
         //     logical_device,
@@ -238,7 +248,7 @@ impl Presenter {
         })
     }
 
-    pub unsafe fn destroy(&self, logical_device: &Device) {
+    pub unsafe fn destroy(&self, logical_device: Arc<Device>) {
         self.in_flight_fences
             .iter()
             .for_each(|fence| logical_device.destroy_fence(*fence, None));
@@ -306,12 +316,12 @@ impl InstanceBuffer {
         self.size
     }
 
-    pub unsafe fn destroy(&mut self, logical_device: &Device) {
+    pub unsafe fn destroy(&mut self, logical_device: Arc<Device>) {
         logical_device.destroy_buffer(self.buffer, None);
         self.changed = true;
     }
 
-    pub unsafe fn create_buffer(&mut self, logical_device: &Device) -> Result<()> {
+    pub unsafe fn create_buffer(&mut self, logical_device: Arc<Device>) -> Result<()> {
         if self.buffer.is_null() {
             self.buffer = g_utils::create_buffer(
                 logical_device,
@@ -357,12 +367,12 @@ impl VertexBuffer {
         self.buffer
     }
 
-    pub unsafe fn destroy(&mut self, logical_device: &Device) {
+    pub unsafe fn destroy(&mut self, logical_device: Arc<Device>) {
         logical_device.destroy_buffer(self.buffer, None);
         self.changed = true;
     }
 
-    pub unsafe fn create_buffer(&mut self, logical_device: &Device) -> Result<()> {
+    pub unsafe fn create_buffer(&mut self, logical_device: Arc<Device>) -> Result<()> {
         if self.buffer.is_null() {
             self.buffer = g_utils::create_buffer(
                 logical_device,
@@ -388,7 +398,7 @@ pub struct UniformBuffer {
 
 impl UniformBuffer {
     pub unsafe fn create(
-        _logical_device: &Device,
+        _logical_device: Arc<Device>,
         ubo: g_types::UniformBufferObject,
     ) -> Result<Self> {
         let size = std::mem::size_of::<g_types::UniformBufferObject>() as u64;
@@ -410,7 +420,7 @@ impl UniformBuffer {
         self.size
     }
 
-    pub unsafe fn destroy(&mut self, logical_device: &Device) {
+    pub unsafe fn destroy(&mut self, logical_device: Arc<Device>) {
         logical_device.destroy_buffer(self.buffer, None);
         self.changed = true;
     }
@@ -419,7 +429,7 @@ impl UniformBuffer {
         self.ubo = ubo;
     }
 
-    pub unsafe fn create_buffer(&mut self, logical_device: &Device) -> Result<()> {
+    pub unsafe fn create_buffer(&mut self, logical_device: Arc<Device>) -> Result<()> {
         if self.buffer.is_null() {
             self.buffer = g_utils::create_buffer(
                 logical_device,
@@ -468,12 +478,12 @@ impl IndexBuffer {
         self.indices.len() as u32
     }
 
-    pub unsafe fn destroy(&mut self, logical_device: &Device) {
+    pub unsafe fn destroy(&mut self, logical_device: Arc<Device>) {
         logical_device.destroy_buffer(self.buffer, None);
         self.changed = true;
     }
 
-    pub unsafe fn create_buffer(&mut self, logical_device: &Device) -> Result<()> {
+    pub unsafe fn create_buffer(&mut self, logical_device: Arc<Device>) -> Result<()> {
         if self.buffer.is_null() {
             self.buffer = g_utils::create_buffer(
                 logical_device,
@@ -526,9 +536,9 @@ impl BufferMemoryAllocator {
     }
 
     unsafe fn create_and_map_staging_buffer_and_memory(
-        instance: &Instance,
-        logical_device: &Device,
-        physical_device: vk::PhysicalDevice,
+        instance: Arc<Instance>,
+        logical_device: Arc<Device>,
+        physical_device: PhysicalDevice,
         size: u64,
     ) -> Result<(vk::Buffer, vk::DeviceMemory, *mut c_void)> {
         let (staging_buffer, staging_buffer_memory, _) = g_utils::create_buffer_and_memory(
@@ -571,9 +581,9 @@ impl BufferMemoryAllocator {
 
     pub unsafe fn create_memories(
         &mut self,
-        instance: &Instance,
-        logical_device: &Device,
-        physical_device: vk::PhysicalDevice,
+        instance: Arc<Instance>,
+        logical_device: Arc<Device>,
+        physical_device: PhysicalDevice,
         size: u64,
     ) -> Result<()> {
         if self.stage_memory_ptr.is_null() {
@@ -630,7 +640,7 @@ impl BufferMemoryAllocator {
 
     pub unsafe fn allocate_memory(
         &mut self,
-        logical_device: &Device,
+        logical_device: Arc<Device>,
         queue_set: &g_utils::QueueSet,
         command_pool_set: g_types::CommandPoolSet,
         models: &mut [&mut Model],
@@ -815,7 +825,7 @@ impl BufferMemoryAllocator {
         Ok(())
     }
 
-    pub unsafe fn destroy(&mut self, logical_device: &Device) {
+    pub unsafe fn destroy(&mut self, logical_device: Arc<Device>) {
         self.destroy_buffers(logical_device);
 
         logical_device.destroy_buffer(self.vertex_index_buffer, None);
@@ -832,7 +842,7 @@ impl BufferMemoryAllocator {
         logical_device.free_memory(self.uniform_memory, None);
     }
 
-    pub unsafe fn destroy_buffers(&mut self, logical_device: &Device) {
+    pub unsafe fn destroy_buffers(&mut self, logical_device: Arc<Device>) {
         self.uniform_buffers_to_allocate
             .iter_mut()
             .filter(|buffer| !buffer.buffer.is_null())
@@ -841,7 +851,7 @@ impl BufferMemoryAllocator {
 
     pub unsafe fn create_buffers(
         &mut self,
-        logical_device: &Device,
+        logical_device: Arc<Device>,
         models: &mut HashMap<String, Model>,
     ) -> Result<()> {
         for model in models.values_mut() {
@@ -880,9 +890,9 @@ impl TextureMemoryAllocator {
     }
 
     unsafe fn create_and_map_staging_buffer_and_memory(
-        instance: &Instance,
-        logical_device: &Device,
-        physical_device: vk::PhysicalDevice,
+        instance: Arc<Instance>,
+        logical_device: Arc<Device>,
+        physical_device: PhysicalDevice,
         size: u64,
     ) -> Result<(vk::Buffer, vk::DeviceMemory, *mut c_void)> {
         let (staging_buffer, staging_memory, _) = g_utils::create_buffer_and_memory(
@@ -902,9 +912,9 @@ impl TextureMemoryAllocator {
 
     pub unsafe fn create_textures(
         &mut self,
-        instance: &Instance,
-        logical_device: &Device,
-        physical_device: vk::PhysicalDevice,
+        instance: Arc<Instance>,
+        logical_device: Arc<Device>,
+        physical_device: PhysicalDevice,
         models: &mut HashMap<&String, &mut Model>,
         // instanced_models: &mut HashMap<&String, &mut InstancedModel>,
     ) -> Result<()> {
@@ -919,9 +929,9 @@ impl TextureMemoryAllocator {
 
     pub unsafe fn allocate_memory(
         &mut self,
-        instance: &Instance,
-        logical_device: &Device,
-        physical_device: vk::PhysicalDevice,
+        instance: Arc<Instance>,
+        logical_device: Arc<Device>,
+        physical_device: PhysicalDevice,
         queue_set: &g_utils::QueueSet,
         command_pool_set: &g_types::CommandPoolSet,
         models: &mut HashMap<&String, &mut Model>,
@@ -1053,7 +1063,7 @@ impl TextureMemoryAllocator {
         Ok(())
     }
 
-    pub unsafe fn destroy(&mut self, logical_device: &Device) {
+    pub unsafe fn destroy(&mut self, logical_device: Arc<Device>) {
         for (_, texture_memory) in self.texture_memorys.iter() {
             logical_device.free_memory(*texture_memory, None);
         }
@@ -1117,9 +1127,9 @@ impl Texture {
 
     pub unsafe fn create_image_objects(
         &mut self,
-        instance: &Instance,
-        logical_device: &Device,
-        physical_device: vk::PhysicalDevice,
+        instance: Arc<Instance>,
+        logical_device: Arc<Device>,
+        physical_device: PhysicalDevice,
     ) -> Result<()> {
         if self.image.is_null() {
             let info = vk::ImageCreateInfo::builder()
@@ -1139,7 +1149,7 @@ impl Texture {
                         | vk::ImageUsageFlags::TRANSFER_DST
                         | vk::ImageUsageFlags::TRANSFER_SRC,
                 )
-                .samples(vk::SampleCountFlags::_1)
+                .samples(SampleCounts::_1)
                 .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
             self.image = logical_device.create_image(&info, None)?;
@@ -1158,7 +1168,7 @@ impl Texture {
         Ok(())
     }
 
-    pub unsafe fn destroy(&self, logical_device: &Device) {
+    pub unsafe fn destroy(&self, logical_device: Arc<Device>) {
         logical_device.destroy_sampler(self.sampler, None);
         logical_device.destroy_image_view(self.image_view, None);
         logical_device.destroy_image(self.image, None);
@@ -1184,8 +1194,8 @@ impl Model {
     pub unsafe fn create(
         path: &str,
         texture_path: &str,
-        logical_device: &Device,
-        // msaa_samples: vk::SampleCountFlags,
+        logical_device: Arc<Device>,
+        // msaa_samples: SampleCounts,
         // render_pass: vk::RenderPass,
         // swapchain_images_count: u32,
         positions: &[g_types::Vec3],
@@ -1225,7 +1235,7 @@ impl Model {
     }
 
     pub unsafe fn create_descriptor_set_layout(
-        logical_device: &Device,
+        logical_device: Arc<Device>,
     ) -> Result<vk::DescriptorSetLayout> {
         let ubo_binding = vk::DescriptorSetLayoutBinding::builder()
             .binding(0)
@@ -1249,7 +1259,7 @@ impl Model {
 
     pub unsafe fn create_descriptor_pool_and_sets(
         &mut self,
-        logical_device: &Device,
+        logical_device: Arc<Device>,
         swapchain_images_count: usize,
     ) -> Result<()> {
         self.descriptor_pool =
@@ -1266,7 +1276,7 @@ impl Model {
     }
 
     pub unsafe fn create_descriptor_pool(
-        logical_device: &Device,
+        logical_device: Arc<Device>,
         swapchain_images_count: u32,
     ) -> Result<vk::DescriptorPool> {
         let ubo_size = vk::DescriptorPoolSize::builder()
@@ -1288,7 +1298,7 @@ impl Model {
     }
     pub unsafe fn update_descriptor_sets(
         &mut self,
-        logical_device: &Device,
+        logical_device: Arc<Device>,
         swapchain_images_count: usize,
         uniform_buffers: &[UniformBuffer],
     ) -> Result<()> {
@@ -1329,8 +1339,8 @@ impl Model {
 
     pub unsafe fn create_pipeline(
         &mut self,
-        logical_device: &Device,
-        msaa_samples: vk::SampleCountFlags,
+        logical_device: Arc<Device>,
+        msaa_samples: SampleCounts,
         render_pass: vk::RenderPass,
         extent: vk::Extent2D,
     ) -> Result<()> {
@@ -1490,7 +1500,7 @@ impl Model {
 
     pub unsafe fn push_constants(
         &self,
-        logical_device: &Device,
+        logical_device: Arc<Device>,
         command_buffer: vk::CommandBuffer,
         position: &g_types::Vec3,
     ) {
@@ -1529,7 +1539,7 @@ impl Model {
 
     pub unsafe fn draw_models(
         &self,
-        logical_device: &Device,
+        logical_device: Arc<Device>,
         command_buffer: vk::CommandBuffer,
         image_index: usize,
     ) -> Result<()> {
@@ -1579,7 +1589,7 @@ impl Model {
         Ok(())
     }
 
-    pub unsafe fn destroy(&mut self, logical_device: &Device) {
+    pub unsafe fn destroy(&mut self, logical_device: Arc<Device>) {
         self.texture.destroy(logical_device);
         self.vertex_buffer.destroy(logical_device);
         self.index_buffer.destroy(logical_device);
@@ -1612,8 +1622,8 @@ impl ModelManager {
     }
     pub unsafe fn recreate_pipelines(
         &mut self,
-        logical_device: &Device,
-        msaa_samples: vk::SampleCountFlags,
+        logical_device: Arc<Device>,
+        msaa_samples: SampleCounts,
         render_pass: vk::RenderPass,
         extent: vk::Extent2D,
     ) -> Result<()> {
@@ -1632,8 +1642,8 @@ impl ModelManager {
 
     pub unsafe fn create_pipelines(
         &mut self,
-        logical_device: &Device,
-        msaa_samples: vk::SampleCountFlags,
+        logical_device: Arc<Device>,
+        msaa_samples: SampleCounts,
         render_pass: vk::RenderPass,
         extent: vk::Extent2D,
     ) -> Result<()> {
@@ -1650,7 +1660,7 @@ impl ModelManager {
 
     pub unsafe fn create_descriptor_pools_and_sets(
         &mut self,
-        logical_device: &Device,
+        logical_device: Arc<Device>,
         swapchain_images_count: usize,
     ) -> Result<()> {
         for model in self.models.values_mut() {
@@ -1665,7 +1675,7 @@ impl ModelManager {
 
     pub unsafe fn update_descriptor_sets(
         &mut self,
-        logical_device: &Device,
+        logical_device: Arc<Device>,
         swapchain_images_count: usize,
     ) -> Result<()> {
         for model in self.models.values_mut() {
@@ -1689,9 +1699,9 @@ impl ModelManager {
 
     pub unsafe fn allocate_texture_memory(
         &mut self,
-        instance: &Instance,
-        logical_device: &Device,
-        physical_device: vk::PhysicalDevice,
+        instance: Arc<Instance>,
+        logical_device: Arc<Device>,
+        physical_device: PhysicalDevice,
         queue_set: &g_utils::QueueSet,
         command_pool_set: g_types::CommandPoolSet,
     ) -> Result<()> {
@@ -1709,9 +1719,9 @@ impl ModelManager {
     }
     pub unsafe fn create_textures(
         &mut self,
-        instance: &Instance,
-        logical_device: &Device,
-        physical_device: vk::PhysicalDevice,
+        instance: Arc<Instance>,
+        logical_device: Arc<Device>,
+        physical_device: PhysicalDevice,
     ) -> Result<()> {
         self.texture_engine.create_textures(
             instance,
@@ -1727,8 +1737,8 @@ impl ModelManager {
     pub unsafe fn load_models_from_scene(
         &mut self,
         scene: &Scene,
-        logical_device: &Device,
-        // msaa_samples: vk::SampleCountFlags,
+        logical_device: Arc<Device>,
+        // msaa_samples: SampleCounts,
         // render_pass: vk::RenderPass,
         // swapchain_images_count: u32,
     ) -> Result<()> {
@@ -1756,7 +1766,7 @@ impl ModelManager {
         Ok(())
     }
 
-    pub unsafe fn create_buffers(&mut self, logical_device: &Device) -> Result<()> {
+    pub unsafe fn create_buffers(&mut self, logical_device: Arc<Device>) -> Result<()> {
         self.buffer_allocator
             .create_buffers(logical_device, &mut self.models)?;
 
@@ -1768,9 +1778,9 @@ impl ModelManager {
 
     pub unsafe fn allocate_memory_for_buffers(
         &mut self,
-        instance: &Instance,
-        logical_device: &Device,
-        physical_device: vk::PhysicalDevice,
+        instance: Arc<Instance>,
+        logical_device: Arc<Device>,
+        physical_device: PhysicalDevice,
         queue_set: &g_utils::QueueSet,
         command_pool_set: g_types::CommandPoolSet,
     ) -> Result<()> {
@@ -1809,7 +1819,7 @@ impl ModelManager {
     //     self.instanced_models.insert(name.to_string(), model);
     // }
 
-    pub unsafe fn destroy(&mut self, logical_device: &Device) {
+    pub unsafe fn destroy(&mut self, logical_device: Arc<Device>) {
         self.models
             .values_mut()
             .for_each(|model| model.destroy(logical_device));
@@ -1859,7 +1869,7 @@ impl Scene {
         &self,
         image_index: usize,
         model_manager: &ModelManager,
-        logical_device: &Device,
+        logical_device: Arc<Device>,
         command_buffer: vk::CommandBuffer,
     ) -> Result<()> {
         for (_model_index, (model_name, _positions)) in self.models.iter().enumerate() {

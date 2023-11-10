@@ -5,11 +5,17 @@ use crate::graphics::utils as g_utils;
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::mem::size_of;
+use std::sync::Arc;
 use std::time::Instant;
-use vk::SurfaceKHR;
-use vulkanalia::prelude::v1_2::*;
-use vulkanalia::vk::KhrSurfaceExtension;
-use vulkanalia::vk::KhrSwapchainExtension;
+use vulkano::device::physical::PhysicalDevice;
+use vulkano::device::Device;
+use vulkano::image::SampleCounts;
+use vulkano::instance::Instance;
+use vulkano::swapchain::Surface;
+// use vk::Arc<Surface>;
+// use vulkanalia::prelude::v1_2::*;
+// use vulkanalia::vk::KhrSurfaceExtension;
+// use vulkanalia::vk::KhrSwapchainExtension;
 use winit::event::ElementState;
 use winit::event::KeyboardInput;
 use winit::event::VirtualKeyCode;
@@ -18,7 +24,7 @@ use winit::event::WindowEvent;
 use winit::window::Window;
 
 pub struct RenderEngine {
-    surface: SurfaceKHR,
+    surface: Arc<Surface>,
     queue_set: g_utils::QueueSet,
     swapchain: g_objects::Swapchain,
     pipeline: g_objects::Pipeline,
@@ -26,7 +32,7 @@ pub struct RenderEngine {
 
     queue_family_indices: g_utils::QueueFamilyIndices,
     swapchain_support: g_utils::SwapchainSupport,
-    msaa_samples: vk::SampleCountFlags,
+    msaa_samples: SampleCounts,
 
     start: Instant,
 }
@@ -34,14 +40,14 @@ pub struct RenderEngine {
 impl RenderEngine {
     pub unsafe fn create(
         window: &Window,
-        instance: &Instance,
-        logical_device: &Device,
-        physical_device: vk::PhysicalDevice,
-        surface: SurfaceKHR,
+        instance: Arc<Instance>,
+        logical_device: Arc<Device>,
+        physical_device: PhysicalDevice,
+        surface: Arc<Surface>,
         queue_set: g_utils::QueueSet,
         queue_family_indices: g_utils::QueueFamilyIndices,
         swapchain_support: g_utils::SwapchainSupport,
-        msaa_samples: vk::SampleCountFlags,
+        msaa_samples: SampleCounts,
         model_manager: &mut g_objects::ModelManager,
     ) -> Result<Self> {
         let swapchain = g_objects::Swapchain::create(
@@ -110,12 +116,12 @@ impl RenderEngine {
     pub unsafe fn recreate_sawpchain(
         &mut self,
         window: &Window,
-        instance: &Instance,
-        logical_device: &Device,
-        physical_device: vk::PhysicalDevice,
+        instance: Arc<Instance>,
+        logical_device: Arc<Device>,
+        physical_device: PhysicalDevice,
         model_manager: &mut g_objects::ModelManager,
     ) -> Result<()> {
-        logical_device.device_wait_idle()?;
+        logical_device.wait_idle()?;
 
         self.swapchain.destroy(logical_device);
         self.pipeline.destroy(logical_device);
@@ -165,20 +171,16 @@ impl RenderEngine {
     pub unsafe fn render(
         &mut self,
         window: &Window,
-        logical_device: &Device,
-        physical_device: vk::PhysicalDevice,
-        instance: &Instance,
+        logical_device: Arc<Device>,
+        physical_device: PhysicalDevice,
+        instance: Arc<Instance>,
         frame: usize,
         resized: &mut bool,
         camera: &crate::controller::camera::Camera,
         scene: &g_objects::Scene,
         model_manager: &mut g_objects::ModelManager,
     ) -> Result<()> {
-        logical_device.wait_for_fences(
-            &[self.presenter.in_flight_fences[frame]],
-            true,
-            u64::MAX,
-        )?;
+        self.presenter.in_flight_fences[frame].wait(None)?;
 
         let result = logical_device.acquire_next_image_khr(
             self.swapchain.swapchain,
@@ -307,7 +309,7 @@ impl RenderEngine {
 
     unsafe fn update_command_buffer(
         &mut self,
-        logical_device: &Device,
+        logical_device: Arc<Device>,
         image_index: usize,
         scene: &g_objects::Scene,
         model_manager: &g_objects::ModelManager,
@@ -360,7 +362,7 @@ impl RenderEngine {
 
     // unsafe fn update_secondary_command_buffer(
     //     &mut self,
-    //     logical_device: &Device,
+    //     logical_device: Arc<Device>,
     //     image_index: usize,
     //     model_index: usize,
     //     model_name: &str,
@@ -473,7 +475,7 @@ impl RenderEngine {
     //     Ok(command_buffer)
     // }
 
-    pub unsafe fn destroy(&mut self, logical_device: &Device, instance: &Instance) {
+    pub unsafe fn destroy(&mut self, logical_device: Arc<Device>, instance: Arc<Instance>) {
         // self.model_manager.destroy(logical_device);
         // self.texture_engine.destroy(logical_device);
         self.presenter.destroy(logical_device);

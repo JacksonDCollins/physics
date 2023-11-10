@@ -127,7 +127,7 @@ impl CommandPoolSet {
         }
     }
 
-    pub fn destroy(&self, logical_device: &Device) {
+    pub fn destroy(&self, logical_device: Arc<Device>) {
         unsafe {
             logical_device.destroy_command_pool(self.present, None);
             logical_device.destroy_command_pool(self.graphics, None);

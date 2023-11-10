@@ -2,153 +2,165 @@ use crate::graphics::objects as g_objects;
 use crate::graphics::types as g_types;
 use anyhow::{anyhow, Result};
 
+use vulkano::device::physical::PhysicalDevice;
+use vulkano::device::physical::PhysicalDeviceType;
+use vulkano::device::Device;
+use vulkano::device::DeviceCreateInfo;
+use vulkano::device::DeviceExtensions;
+use vulkano::device::Features;
+use vulkano::device::Queue;
+use vulkano::device::QueueCreateInfo;
+use vulkano::device::QueueFlags;
+use vulkano::format::Format;
+use vulkano::image::SampleCounts;
+use vulkano::instance::debug::DebugUtilsMessageSeverity;
+use vulkano::instance::debug::DebugUtilsMessageType;
+use vulkano::instance::debug::DebugUtilsMessenger;
+use vulkano::instance::debug::DebugUtilsMessengerCallback;
+use vulkano::instance::debug::DebugUtilsMessengerCallbackData;
+use vulkano::instance::debug::DebugUtilsMessengerCreateInfo;
+use vulkano::instance::debug::ValidationFeatureEnable;
 use vulkano::instance::Instance;
+use vulkano::instance::InstanceCreateFlags;
 use vulkano::instance::InstanceCreateInfo;
+use vulkano::instance::InstanceExtensions;
+use vulkano::library;
+use vulkano::swapchain::ColorSpace;
+use vulkano::swapchain::PresentMode;
+use vulkano::swapchain::Surface;
+use vulkano::swapchain::SurfaceCapabilities;
+use vulkano::swapchain::SurfaceInfo;
+use vulkano::ExtensionProperties;
+use vulkano::Version;
 use vulkano::VulkanLibrary;
 
 use std::collections::HashSet;
-use std::ffi::CStr;
 
-use std::mem::size_of;
-use std::os::raw::c_void;
+use std::fmt::Debug;
 
-use std::collections::HashMap;
 use std::fs::File;
-use std::hash::{Hash, Hasher};
+
 use std::io::BufReader;
+use std::sync::Arc;
 use thiserror::Error;
-use vulkanalia::bytecode::Bytecode;
-use vulkanalia::prelude::v1_2::*;
-use vulkanalia::vk::{ExtDebugUtilsExtension, KhrSurfaceExtension, KhrSwapchainExtension};
-use vulkanalia::{Entry, Version};
+// use vulkanalia::bytecode::Bytecode;
+// use vulkanalia::prelude::v1_2::*;
+// use vulkanalia::vk::{ExtDebugUtilsExtension, KhrSurfaceExtension, KhrSwapchainExtension};
+// use vulkanalia::{Entry, Version};
 use winit::window::Window;
 
 pub use std::ptr::copy_nonoverlapping as memcpy;
 
 pub const VALIDATION_ENABLED: bool = cfg!(debug_assertions);
-pub const VALIDATION_LAYER: vk::ExtensionName =
-    vk::ExtensionName::from_bytes(b"VK_LAYER_KHRONOS_validation");
-pub const PORTABILITY_MACOS_VERSION: Version = Version::new(1, 3, 216);
-pub const DEVICE_EXTENSIONS: &[vk::ExtensionName] = &[
-    vk::KHR_SWAPCHAIN_EXTENSION.name,
-    vk::KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION.name,
-];
+pub const VALIDATION_LAYER: &str = "VK_LAYER_KHRONOS_validation";
+pub const PORTABILITY_MACOS_VERSION: Version = Version {
+    major: 1,
+    minor: 3,
+    patch: 216,
+};
+pub const DEVICE_EXTENSIONS: DeviceExtensions = DeviceExtensions {
+    khr_swapchain: true,
+    khr_shader_non_semantic_info: true,
+    ..DeviceExtensions::empty()
+};
 pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 pub unsafe fn create_instance(
     // window: &Window,
     // entry: &Entry,
-    library: &VulkanLibrary,
-) -> Result<(Instance, Option<vk::DebugUtilsMessengerEXT>)> {
-    // let application_info = vk::ApplicationInfo::builder()
-    //     .application_name(b"Physics")
-    //     .application_version(vk::make_version(1, 0, 0))
-    //     .engine_name(b"No Engine")
-    //     .engine_version(vk::make_version(1, 0, 0))
-    //     .api_version(vk::make_version(1, 0, 0));
+    library: Arc<VulkanLibrary>,
+    mut extensions: InstanceExtensions,
+) -> Result<(Arc<Instance>, Option<DebugUtilsMessenger>)> {
+    let available_layers = library
+        .layer_properties()?
+        .into_iter()
+        .map(|l| l.name())
+        .collect::<HashSet<_>>();
 
-    // let available_layers = entry
-    //     .enumerate_instance_layer_properties()?
-    //     .iter()
-    //     .map(|layer| layer.layer_name)
-    //     .collect::<HashSet<_>>();
-
-    // if VALIDATION_ENABLED && !available_layers.contains(&VALIDATION_LAYER) {
-    //     return Err(anyhow!("Validation layer not available"));
-    // }
-
-    // let layers = if VALIDATION_ENABLED {
-    //     vec![VALIDATION_LAYER.as_ptr()]
-    // } else {
-    //     vec![]
-    // };
-
-    // let mut extensions = vulkanalia::window::get_required_instance_extensions(window)
-    //     .iter()
-    //     .map(|e| e.as_ptr())
-    //     .collect::<Vec<_>>();
-
-    // if VALIDATION_ENABLED {
-    //     extensions.push(vk::EXT_DEBUG_UTILS_EXTENSION.name.as_ptr());
-    // }
-
-    // // Required by Vulkan SDK on macOS since 1.3.216.
-    // let flags = if cfg!(target_os = "macos") && entry.version()? >= PORTABILITY_MACOS_VERSION {
-    //     log::info!("Enabling extensions for macOS portability");
-    //     extensions.push(
-    //         vk::KHR_GET_PHYSICAL_DEVICE_PROPERTIES2_EXTENSION
-    //             .name
-    //             .as_ptr(),
-    //     );
-    //     extensions.push(vk::KHR_PORTABILITY_ENUMERATION_EXTENSION.name.as_ptr());
-    //     vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR
-    // } else {
-    //     vk::InstanceCreateFlags::empty()
-    // };
-
-    // let mut features = vk::ValidationFeaturesEXT::builder()
-    //     .enabled_validation_features(&[
-    //         vk::ValidationFeatureEnableEXT::BEST_PRACTICES,
-    //         vk::ValidationFeatureEnableEXT::DEBUG_PRINTF,
-    //     ])
-    //     .build();
-
-    let mut instance_info = InstanceCreateInfo::application_from_cargo_toml();
-
-    instance_info.enabled_layers = &layers;
-    instance_info.enabled_extension_names(&extensions);
-    instance_info.flags(flags);
-
-    // let mut debug_info = vk::DebugUtilsMessengerCreateInfoEXT::builder()
-    //     .message_severity(
-    //         vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
-    //             | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
-    //     )
-    //     .message_type(vk::DebugUtilsMessageTypeFlagsEXT::all())
-    //     .user_callback(Some(debug_callback));
-
-    // if VALIDATION_ENABLED {
-    //     instance_info = instance_info.push_next(&mut debug_info);
-    //     instance_info = instance_info.push_next(&mut features);
-    // }
-
-    // let instance = entry.create_instance(&instance_info, None)?;
-
-    // let messenger = if VALIDATION_ENABLED {
-    //     Some(instance.create_debug_utils_messenger_ext(&debug_info, None)?)
-    // } else {
-    //     None
-    // };
-
-    // Ok((instance, messenger))
-
-    Instance::new(library)
-}
-
-extern "system" fn debug_callback(
-    severity: vk::DebugUtilsMessageSeverityFlagsEXT,
-    type_: vk::DebugUtilsMessageTypeFlagsEXT,
-    data: *const vk::DebugUtilsMessengerCallbackDataEXT,
-    _: *mut c_void,
-) -> vk::Bool32 {
-    let data = unsafe { *data };
-    let message = unsafe { CStr::from_ptr(data.message) }.to_string_lossy();
-
-    if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::ERROR {
-        log::error!("({:?}) {}", type_, message);
-        println!("\n");
-    } else if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::WARNING {
-        log::warn!("({:?}) {}", type_, message);
-        println!("\n");
-    } else if severity >= vk::DebugUtilsMessageSeverityFlagsEXT::INFO {
-        log::debug!("({:?}) {}", type_, message);
-        println!("\n");
-    } else {
-        log::trace!("({:?}) {}", type_, message);
-        println!("\n");
+    if VALIDATION_ENABLED && !available_layers.contains(&VALIDATION_LAYER) {
+        return Err(anyhow!("Validation layer not available"));
     }
 
-    vk::FALSE
+    let layers = if VALIDATION_ENABLED {
+        vec![VALIDATION_LAYER.to_string()]
+    } else {
+        vec![]
+    };
+
+    if VALIDATION_ENABLED {
+        extensions.ext_debug_utils = true;
+    }
+
+    // // Required by Vulkan SDK on macOS since 1.3.216.
+    let flags = if cfg!(target_os = "macos") && library.api_version() >= PORTABILITY_MACOS_VERSION {
+        log::info!("Enabling extensions for macOS portability");
+        extensions.khr_get_physical_device_properties2 = true;
+        extensions.khr_portability_enumeration = true;
+        InstanceCreateFlags::ENUMERATE_PORTABILITY
+    } else {
+        InstanceCreateFlags::empty()
+    };
+
+    let mut instance_info = InstanceCreateInfo {
+        enabled_layers: layers,
+        enabled_extensions: extensions,
+        engine_name: Some("No Engine".to_string()),
+        engine_version: Version {
+            major: 1,
+            minor: 0,
+            patch: 0,
+        },
+        flags,
+        ..InstanceCreateInfo::application_from_cargo_toml()
+    };
+
+    let mut debug_info = DebugUtilsMessengerCreateInfo {
+        message_severity: DebugUtilsMessageSeverity::ERROR
+            | DebugUtilsMessageSeverity::WARNING
+            | DebugUtilsMessageSeverity::INFO
+            | DebugUtilsMessageSeverity::VERBOSE,
+        message_type: DebugUtilsMessageType::GENERAL
+            | DebugUtilsMessageType::VALIDATION
+            | DebugUtilsMessageType::PERFORMANCE,
+        ..DebugUtilsMessengerCreateInfo::user_callback(DebugUtilsMessengerCallback::new(
+            debug_callback,
+        ))
+    };
+
+    let features = vec![
+        ValidationFeatureEnable::BestPractices,
+        ValidationFeatureEnable::DebugPrintf,
+    ];
+    if VALIDATION_ENABLED {
+        instance_info.debug_utils_messengers = vec![debug_info];
+        instance_info.enabled_validation_features = features
+    }
+
+    let instance = Instance::new(library, instance_info)?;
+
+    let messenger = if VALIDATION_ENABLED {
+        Some(DebugUtilsMessenger::new(instance, debug_info)?)
+    } else {
+        None
+    };
+
+    Ok((instance, messenger))
+}
+
+fn debug_callback<'a>(
+    severity: DebugUtilsMessageSeverity,
+    type_: DebugUtilsMessageType,
+    data: DebugUtilsMessengerCallbackData<'a>,
+) {
+    let message = data.message;
+
+    match severity {
+        DebugUtilsMessageSeverity::ERROR => log::error!("({:?}) {}", type_, message),
+        DebugUtilsMessageSeverity::WARNING => log::warn!("({:?}) {}", type_, message),
+        DebugUtilsMessageSeverity::INFO => log::debug!("({:?}) {}", type_, message),
+        DebugUtilsMessageSeverity::VERBOSE => log::trace!("({:?}) {}", type_, message),
+        _ => {}
+    }
 }
 
 #[derive(Debug, Error)]
@@ -156,25 +168,26 @@ extern "system" fn debug_callback(
 pub struct SuitabilityError(pub &'static str);
 
 pub unsafe fn pick_physical_device(
-    instance: &Instance,
-    surface: vk::SurfaceKHR,
+    instance: Arc<Instance>,
+    surface: Arc<Surface>,
 ) -> Result<(
-    vk::PhysicalDevice,
+    Arc<PhysicalDevice>,
     QueueFamilyIndices,
     SwapchainSupport,
-    vk::SampleCountFlags,
+    SampleCounts,
 )> {
     for physical_device in instance.enumerate_physical_devices()? {
-        let properties = instance.get_physical_device_properties(physical_device);
-
         match check_physical_device(instance, surface, physical_device) {
             Err(error) => log::warn!(
                 "Skipping physical device (`{}`): {}",
-                properties.device_name,
+                physical_device.properties().device_name,
                 error
             ),
             Ok((indices, swapchain_support)) => {
-                log::info!("Selected physical device (`{}`).", properties.device_name);
+                log::info!(
+                    "Selected physical device (`{}`).",
+                    physical_device.properties().device_name
+                );
                 let msaa_samples = get_max_msaa_samples(instance, physical_device);
                 return Ok((physical_device, indices, swapchain_support, msaa_samples));
             }
@@ -185,24 +198,24 @@ pub unsafe fn pick_physical_device(
 }
 
 unsafe fn check_physical_device(
-    instance: &Instance,
-    surface: vk::SurfaceKHR,
-    physical_device: vk::PhysicalDevice,
+    instance: Arc<Instance>,
+    surface: Arc<Surface>,
+    physical_device: Arc<PhysicalDevice>,
 ) -> Result<(QueueFamilyIndices, SwapchainSupport)> {
-    let properties = instance.get_physical_device_properties(physical_device);
-    if properties.device_type != vk::PhysicalDeviceType::DISCRETE_GPU {
+    let properties = physical_device.properties();
+    if properties.device_type != PhysicalDeviceType::DiscreteGpu {
         return Err(anyhow!(SuitabilityError(
             "Only discrete GPUs are supported."
         )));
     }
 
-    let features = instance.get_physical_device_features(physical_device);
-    if features.geometry_shader != vk::TRUE {
+    let features = physical_device.supported_features();
+    if !features.geometry_shader {
         return Err(anyhow!(SuitabilityError(
             "Missing geometry shader support."
         )));
     }
-    if features.sampler_anisotropy != vk::TRUE {
+    if !features.sampler_anisotropy {
         return Err(anyhow!(SuitabilityError("No sampler anisotropy.")));
     }
 
@@ -218,15 +231,11 @@ unsafe fn check_physical_device(
 }
 
 unsafe fn check_physical_device_extensions(
-    instance: &Instance,
-    physical_device: vk::PhysicalDevice,
+    instance: Arc<Instance>,
+    physical_device: Arc<PhysicalDevice>,
 ) -> Result<()> {
-    let extensions = instance
-        .enumerate_device_extension_properties(physical_device, None)?
-        .iter()
-        .map(|e| e.extension_name)
-        .collect::<HashSet<_>>();
-    if DEVICE_EXTENSIONS.iter().all(|e| extensions.contains(e)) {
+    let extensions = physical_device.supported_extensions();
+    if DEVICE_EXTENSIONS.contains(extensions) {
         Ok(())
     } else {
         Err(anyhow!(SuitabilityError(
@@ -255,40 +264,36 @@ impl QueueFamilyIndices {
     }
 
     pub unsafe fn get(
-        instance: &Instance,
-        surface: vk::SurfaceKHR,
-        physical_device: vk::PhysicalDevice,
+        instance: Arc<Instance>,
+        surface: Arc<Surface>,
+        physical_device: Arc<PhysicalDevice>,
     ) -> Result<Self> {
-        let properties = instance.get_physical_device_queue_family_properties(physical_device);
+        let properties = physical_device.queue_family_properties();
 
         let graphics = properties
             .iter()
-            .position(|p| p.queue_flags.contains(vk::QueueFlags::GRAPHICS))
+            .position(|p| p.queue_flags.contains(QueueFlags::GRAPHICS))
             .map(|i| i as u32);
 
         let transfer = properties
             .iter()
             .position(|p| {
-                p.queue_flags.contains(vk::QueueFlags::TRANSFER)
-                    && !p.queue_flags.contains(vk::QueueFlags::GRAPHICS)
+                p.queue_flags.contains(QueueFlags::TRANSFER)
+                    && !p.queue_flags.contains(QueueFlags::GRAPHICS)
             })
             .map(|i| i as u32);
 
         let compute = properties
             .iter()
             .position(|p| {
-                p.queue_flags.contains(vk::QueueFlags::COMPUTE)
-                    && !p.queue_flags.contains(vk::QueueFlags::GRAPHICS)
+                p.queue_flags.contains(QueueFlags::COMPUTE)
+                    && !p.queue_flags.contains(QueueFlags::GRAPHICS)
             })
             .map(|i| i as u32);
 
         let mut present = None;
         for (index, _properties) in properties.iter().enumerate() {
-            if instance.get_physical_device_surface_support_khr(
-                physical_device,
-                index as u32,
-                surface,
-            )? {
+            if physical_device.surface_support(index as u32, &surface)? {
                 present = Some(index as u32);
                 break;
             }
@@ -313,38 +318,42 @@ impl QueueFamilyIndices {
 
 #[derive(Clone, Debug)]
 pub struct SwapchainSupport {
-    pub capabilities: vk::SurfaceCapabilitiesKHR,
-    pub formats: Vec<vk::SurfaceFormatKHR>,
-    pub present_modes: Vec<vk::PresentModeKHR>,
+    pub capabilities: SurfaceCapabilities,
+    pub formats: Vec<(Format, ColorSpace)>,
+    pub present_modes: Vec<PresentMode>,
 }
 
 impl SwapchainSupport {
     pub unsafe fn get(
-        instance: &Instance,
-        surface: vk::SurfaceKHR,
-        physical_device: vk::PhysicalDevice,
+        instance: Arc<Instance>,
+        surface: Arc<Surface>,
+        physical_device: Arc<PhysicalDevice>,
     ) -> Result<Self> {
+        let surface_info = SurfaceInfo::default();
         Ok(Self {
-            capabilities: instance
-                .get_physical_device_surface_capabilities_khr(physical_device, surface)?,
-            formats: instance.get_physical_device_surface_formats_khr(physical_device, surface)?,
-            present_modes: instance
-                .get_physical_device_surface_present_modes_khr(physical_device, surface)?,
+            // capabilities: instance
+            //     .get_physical_device_surface_capabilities_khr(physical_device, surface)?,
+            capabilities: physical_device.surface_capabilities(&surface, surface_info)?,
+            // formats: instance.get_physical_device_surface_formats_khr(physical_device, surface)?,
+            formats: physical_device.surface_formats(&surface, surface_info)?,
+            // present_modes: instance
+            //     .get_physical_device_surface_present_modes_khr(physical_device, surface)?,
+            present_modes: physical_device.surface_present_modes(&surface, surface_info)?,
         })
     }
 }
 
 pub struct QueueSet {
-    pub graphics: vk::Queue,
-    pub present: vk::Queue,
-    pub transfer: vk::Queue,
-    pub compute: vk::Queue,
+    pub graphics: Arc<Queue>,
+    pub present: Arc<Queue>,
+    pub transfer: Arc<Queue>,
+    pub compute: Arc<Queue>,
 }
 
 pub unsafe fn create_logical_device(
-    entry: &Entry,
-    instance: &Instance,
-    physical_device: vk::PhysicalDevice,
+    instance: Arc<Instance>,
+    physical_device: Arc<PhysicalDevice>,
+    library: Arc<VulkanLibrary>,
     indices: QueueFamilyIndices,
 ) -> Result<(Device, QueueSet)> {
     let mut unique_indices = HashSet::new();
@@ -353,13 +362,11 @@ pub unsafe fn create_logical_device(
     unique_indices.insert(indices.transfer);
     unique_indices.insert(indices.compute);
 
-    let queue_priorities = &[1.0];
     let queue_infos = unique_indices
         .iter()
-        .map(|i| {
-            vk::DeviceQueueCreateInfo::builder()
-                .queue_family_index(*i)
-                .queue_priorities(queue_priorities)
+        .map(|i| QueueCreateInfo {
+            queue_family_index: *i,
+            ..Default::default()
         })
         .collect::<Vec<_>>();
 
@@ -369,35 +376,45 @@ pub unsafe fn create_logical_device(
         vec![]
     };
 
-    let mut extensions = DEVICE_EXTENSIONS
-        .iter()
-        .map(|n| n.as_ptr())
-        .collect::<Vec<_>>();
+    let mut extensions = DEVICE_EXTENSIONS;
 
     // Required by Vulkan SDK on macOS since 1.3.216.
-    if cfg!(target_os = "macos") && entry.version()? >= PORTABILITY_MACOS_VERSION {
-        extensions.push(vk::KHR_PORTABILITY_SUBSET_EXTENSION.name.as_ptr());
+    if cfg!(target_os = "macos") && library.api_version() >= PORTABILITY_MACOS_VERSION {
+        extensions.khr_portability_subset = true;
     }
 
-    // let mut indexing_features = vk::PhysicalDeviceDescriptorIndexingFeaturesEXT::builder()
-    //     .runtime_descriptor_array(true)
-    //     .build();
+    let features = Features {
+        sampler_anisotropy: true,
+        ..Features::empty()
+    };
+    // let info = vk::DeviceCreateInfo::builder()
+    //     .queue_create_infos(&queue_infos)
+    //     .enabled_layer_names(&layers)
+    //     .enabled_extension_names(&extensions)
+    //     .enabled_features(&features);
+    let info = DeviceCreateInfo {
+        enabled_features: features,
+        queue_create_infos: queue_infos,
+        enabled_extensions: extensions,
+        ..DeviceCreateInfo::default()
+    };
 
-    let features = vk::PhysicalDeviceFeatures::builder().sampler_anisotropy(true);
-    let info = vk::DeviceCreateInfo::builder()
-        .queue_create_infos(&queue_infos)
-        .enabled_layer_names(&layers)
-        .enabled_extension_names(&extensions)
-        .enabled_features(&features);
+    // let device = instance.create_device(physical_device, &info, None)?;
+    let (device, mut queues) = Device::new(physical_device, info)?;
 
-    // let info = info.push_next(&mut indexing_features);
+    let graphics_queue = queues
+        .find(|q| q.id_within_family() == indices.graphics)
+        .unwrap();
+    let present_queue = queues
+        .find(|q| q.id_within_family() == indices.present)
+        .unwrap();
+    let transfer_queue = queues
+        .find(|q| q.id_within_family() == indices.transfer)
+        .unwrap();
+    let compute_queue = queues
+        .find(|q| q.id_within_family() == indices.compute)
+        .unwrap();
 
-    let device = instance.create_device(physical_device, &info, None)?;
-
-    let graphics_queue = device.get_device_queue(indices.graphics, 0);
-    let present_queue = device.get_device_queue(indices.present, 0);
-    let transfer_queue = device.get_device_queue(indices.transfer, 0);
-    let compute_queue = device.get_device_queue(indices.compute, 0);
     Ok((
         device,
         QueueSet {
@@ -451,8 +468,8 @@ fn get_swapchain_extent(window: &Window, capabilities: vk::SurfaceCapabilitiesKH
 
 pub unsafe fn create_swapchain(
     window: &Window,
-    logical_device: &Device,
-    surface: vk::SurfaceKHR,
+    logical_device: Arc<Device>,
+    surface: vk::Arc<Surface>,
     queue_family_indices: &QueueFamilyIndices,
     swapchain_support: &SwapchainSupport,
 ) -> Result<(vk::SwapchainKHR, Vec<vk::Image>, vk::Extent2D, vk::Format)> {
@@ -494,7 +511,7 @@ pub unsafe fn create_swapchain(
 }
 
 pub unsafe fn create_swapchain_image_views(
-    logical_device: &Device,
+    logical_device: Arc<Device>,
     images: &[vk::Image],
     swapchain_format: vk::Format,
 ) -> Result<Vec<vk::ImageView>> {
@@ -513,7 +530,7 @@ pub unsafe fn create_swapchain_image_views(
 }
 
 pub unsafe fn create_pipeline_layout(
-    logical_device: &Device,
+    logical_device: Arc<Device>,
     descriptor_set_layout: vk::DescriptorSetLayout,
 ) -> Result<vk::PipelineLayout> {
     let vert_push_constant_range = vk::PushConstantRange::builder()
@@ -537,7 +554,7 @@ pub unsafe fn create_pipeline_layout(
 }
 
 pub unsafe fn create_shader_module(
-    logical_device: &Device,
+    logical_device: Arc<Device>,
     bytecode: &[u8],
 ) -> Result<vk::ShaderModule> {
     let bytecode = Bytecode::new(bytecode).unwrap();
@@ -552,11 +569,11 @@ pub unsafe fn create_shader_module(
 }
 
 pub unsafe fn create_render_pass(
-    instance: &Instance,
-    logical_device: &Device,
-    physical_device: vk::PhysicalDevice,
+    instance: Arc<Instance>,
+    logical_device: Arc<Device>,
+    physical_device: PhysicalDevice,
     swapchain: &g_objects::Swapchain,
-    msaa_samples: vk::SampleCountFlags,
+    msaa_samples: SampleCounts,
 ) -> Result<vk::RenderPass> {
     let color_attachment = vk::AttachmentDescription::builder()
         .format(swapchain.format)
@@ -580,7 +597,7 @@ pub unsafe fn create_render_pass(
 
     let color_resolve_attachment = vk::AttachmentDescription::builder()
         .format(swapchain.format)
-        .samples(vk::SampleCountFlags::_1)
+        .samples(SampleCounts::_1)
         .load_op(vk::AttachmentLoadOp::DONT_CARE)
         .store_op(vk::AttachmentStoreOp::STORE)
         .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
@@ -643,7 +660,7 @@ pub unsafe fn create_render_pass(
 }
 
 pub unsafe fn create_framebuffers(
-    device: &Device,
+    device: Arc<Device>,
     render_pass: vk::RenderPass,
     swapchain: &g_objects::Swapchain,
     depth_image_view: vk::ImageView,
@@ -669,7 +686,7 @@ pub unsafe fn create_framebuffers(
 }
 
 pub unsafe fn create_command_pool_set(
-    logical_device: &Device,
+    logical_device: Arc<Device>,
     queue_family_indices: &QueueFamilyIndices,
 ) -> Result<g_types::CommandPoolSet> {
     let present = create_command_pool(logical_device, queue_family_indices.present)?;
@@ -683,7 +700,7 @@ pub unsafe fn create_command_pool_set(
 }
 
 pub unsafe fn create_command_pool_sets(
-    logical_device: &Device,
+    logical_device: Arc<Device>,
     swapchain_images_count: u32,
     queue_family_indices: &QueueFamilyIndices,
 ) -> Result<Vec<g_types::CommandPoolSet>> {
@@ -693,7 +710,7 @@ pub unsafe fn create_command_pool_sets(
 }
 
 unsafe fn create_command_pool(
-    logical_device: &Device,
+    logical_device: Arc<Device>,
     queue_family_index: u32,
 ) -> Result<vk::CommandPool> {
     let info = vk::CommandPoolCreateInfo::builder()
@@ -703,7 +720,7 @@ unsafe fn create_command_pool(
     Ok(logical_device.create_command_pool(&info, None)?)
 }
 pub unsafe fn create_command_buffers(
-    device: &Device,
+    device: Arc<Device>,
     command_pool_sets: &[g_types::CommandPoolSet],
     swapchain_images_count: usize,
 ) -> Result<Vec<vk::CommandBuffer>> {
@@ -722,7 +739,7 @@ pub unsafe fn create_command_buffers(
 }
 
 pub unsafe fn create_sync_objects(
-    logical_device: &Device,
+    logical_device: Arc<Device>,
     swapchain_images_count: usize,
 ) -> Result<(
     Vec<vk::Semaphore>,
@@ -771,9 +788,9 @@ pub unsafe fn create_sync_objects(
 }
 
 pub unsafe fn query_swapchain_support(
-    instance: &Instance,
-    physical_device: vk::PhysicalDevice,
-    surface: vk::SurfaceKHR,
+    instance: Arc<Instance>,
+    physical_device: PhysicalDevice,
+    surface: vk::Arc<Surface>,
 ) -> Result<SwapchainSupport> {
     let capabilities =
         instance.get_physical_device_surface_capabilities_khr(physical_device, surface)?;
@@ -789,8 +806,8 @@ pub unsafe fn query_swapchain_support(
 }
 
 pub unsafe fn get_memory_type_index(
-    instance: &Instance,
-    physical_device: vk::PhysicalDevice,
+    instance: Arc<Instance>,
+    physical_device: PhysicalDevice,
     properties: vk::MemoryPropertyFlags,
     requirements: vk::MemoryRequirements,
 ) -> Result<u32> {
@@ -806,7 +823,7 @@ pub unsafe fn get_memory_type_index(
 }
 
 pub unsafe fn create_buffer(
-    logical_device: &Device,
+    logical_device: Arc<Device>,
     size: vk::DeviceSize,
     usage: vk::BufferUsageFlags,
 ) -> Result<vk::Buffer> {
@@ -821,9 +838,9 @@ pub unsafe fn create_buffer(
 }
 
 pub unsafe fn create_buffer_and_memory(
-    instance: &Instance,
-    device: &Device,
-    physical_device: vk::PhysicalDevice,
+    instance: Arc<Instance>,
+    device: Arc<Device>,
+    physical_device: PhysicalDevice,
     size: vk::DeviceSize,
     usage: vk::BufferUsageFlags,
     properties: vk::MemoryPropertyFlags,
@@ -849,7 +866,7 @@ pub unsafe fn create_buffer_and_memory(
 }
 
 pub unsafe fn create_memory_with_mem_type_index(
-    device: &Device,
+    device: Arc<Device>,
     size: vk::DeviceSize,
     memory_type_index: u32,
 ) -> Result<vk::DeviceMemory> {
@@ -863,7 +880,7 @@ pub unsafe fn create_memory_with_mem_type_index(
 }
 
 pub unsafe fn copy_buffer(
-    logical_device: &Device,
+    logical_device: Arc<Device>,
     queue: vk::Queue,
     command_pool: vk::CommandPool,
     source: vk::Buffer,
@@ -886,9 +903,9 @@ pub unsafe fn copy_buffer(
 }
 
 pub unsafe fn get_memory_info(
-    instance: &Instance,
-    physical_device: vk::PhysicalDevice,
-    logical_device: &Device,
+    instance: Arc<Instance>,
+    physical_device: PhysicalDevice,
+    logical_device: Arc<Device>,
     buffer: vk::Buffer,
     size: u64,
     properties: vk::MemoryPropertyFlags,
@@ -911,7 +928,7 @@ pub fn align_up(value: u64, alignment: u64) -> u64 {
 }
 
 pub unsafe fn create_descriptor_sets(
-    logical_device: &Device,
+    logical_device: Arc<Device>,
     descriptor_set_layout: vk::DescriptorSetLayout,
     descriptor_pool: vk::DescriptorPool,
     swapchain_images_count: usize,
@@ -927,13 +944,13 @@ pub unsafe fn create_descriptor_sets(
 }
 
 pub unsafe fn create_image(
-    instance: &Instance,
-    logical_device: &Device,
-    physical_device: vk::PhysicalDevice,
+    instance: Arc<Instance>,
+    logical_device: Arc<Device>,
+    physical_device: PhysicalDevice,
     width: u32,
     height: u32,
     mip_levels: u32,
-    samples: vk::SampleCountFlags,
+    samples: SampleCounts,
     format: vk::Format,
     tiling: vk::ImageTiling,
     usage: vk::ImageUsageFlags,
@@ -976,7 +993,7 @@ pub unsafe fn create_image(
 }
 
 unsafe fn begin_single_time_commands(
-    logical_device: &Device,
+    logical_device: Arc<Device>,
     command_pool: vk::CommandPool,
 ) -> Result<vk::CommandBuffer> {
     let info = vk::CommandBufferAllocateInfo::builder()
@@ -995,7 +1012,7 @@ unsafe fn begin_single_time_commands(
 }
 
 unsafe fn end_single_time_commands(
-    logical_device: &Device,
+    logical_device: Arc<Device>,
     command_pool: vk::CommandPool,
     queue: vk::Queue,
     command_buffer: vk::CommandBuffer,
@@ -1014,7 +1031,7 @@ unsafe fn end_single_time_commands(
 }
 
 pub unsafe fn transition_image_layout(
-    logical_device: &Device,
+    logical_device: Arc<Device>,
     command_pool: vk::CommandPool,
     queue: vk::Queue,
     image: vk::Image,
@@ -1093,7 +1110,7 @@ pub unsafe fn transition_image_layout(
 }
 
 pub unsafe fn copy_buffer_to_image(
-    logical_device: &Device,
+    logical_device: Arc<Device>,
     command_pool: vk::CommandPool,
     queue: vk::Queue,
     buffer: vk::Buffer,
@@ -1134,7 +1151,7 @@ pub unsafe fn copy_buffer_to_image(
 }
 
 pub unsafe fn create_image_view(
-    logical_device: &Device,
+    logical_device: Arc<Device>,
     image: vk::Image,
     mip_levels: u32,
     format: vk::Format,
@@ -1159,7 +1176,7 @@ pub unsafe fn create_image_view(
 }
 
 pub unsafe fn create_texture_image_view(
-    logical_device: &Device,
+    logical_device: Arc<Device>,
     texture_image: vk::Image,
     mip_levels: u32,
     format: vk::Format,
@@ -1173,7 +1190,7 @@ pub unsafe fn create_texture_image_view(
     )
 }
 
-pub unsafe fn create_texture_sampler(device: &Device, mip_levels: u32) -> Result<vk::Sampler> {
+pub unsafe fn create_texture_sampler(device: Arc<Device>, mip_levels: u32) -> Result<vk::Sampler> {
     let info = vk::SamplerCreateInfo::builder()
         .mag_filter(vk::Filter::LINEAR)
         .min_filter(vk::Filter::LINEAR)
@@ -1197,13 +1214,13 @@ pub unsafe fn create_texture_sampler(device: &Device, mip_levels: u32) -> Result
 }
 
 pub unsafe fn create_depth_objects(
-    instance: &Instance,
-    logical_device: &Device,
-    physical_device: vk::PhysicalDevice,
+    instance: Arc<Instance>,
+    logical_device: Arc<Device>,
+    physical_device: PhysicalDevice,
     extent: vk::Extent2D,
     command_pool_set: &g_types::CommandPoolSet,
     queue_set: &QueueSet,
-    msaa_samples: vk::SampleCountFlags,
+    msaa_samples: SampleCounts,
 ) -> Result<(vk::Image, vk::DeviceMemory, vk::ImageView)> {
     let format = get_depth_format(instance, physical_device)?;
 
@@ -1248,8 +1265,8 @@ pub unsafe fn create_depth_objects(
 }
 
 unsafe fn get_supported_format(
-    instance: &Instance,
-    physical_device: vk::PhysicalDevice,
+    instance: Arc<Instance>,
+    physical_device: PhysicalDevice,
     candidates: &[vk::Format],
     tiling: vk::ImageTiling,
     features: vk::FormatFeatureFlags,
@@ -1269,8 +1286,8 @@ unsafe fn get_supported_format(
 }
 
 unsafe fn get_depth_format(
-    instance: &Instance,
-    physical_device: vk::PhysicalDevice,
+    instance: Arc<Instance>,
+    physical_device: PhysicalDevice,
 ) -> Result<vk::Format> {
     let candidates = &[
         vk::Format::D32_SFLOAT,
@@ -1334,9 +1351,9 @@ pub fn load_model(path: &str) -> Result<(Vec<g_types::Vertex>, Vec<u32>)> {
 }
 
 pub unsafe fn generate_mipmaps(
-    instance: &Instance,
-    logical_device: &Device,
-    physical_device: vk::PhysicalDevice,
+    instance: Arc<Instance>,
+    logical_device: Arc<Device>,
+    physical_device: PhysicalDevice,
     command_pool: vk::CommandPool,
     queue: vk::Queue,
     image: vk::Image,
@@ -1477,32 +1494,35 @@ pub unsafe fn generate_mipmaps(
 }
 
 pub unsafe fn get_max_msaa_samples(
-    instance: &Instance,
-    physical_device: vk::PhysicalDevice,
-) -> vk::SampleCountFlags {
-    let properties = instance.get_physical_device_properties(physical_device);
-    let counts = properties.limits.framebuffer_color_sample_counts
-        & properties.limits.framebuffer_depth_sample_counts;
+    instance: Arc<Instance>,
+    physical_device: Arc<PhysicalDevice>,
+) -> SampleCounts {
+    // let properties = instance.get_physical_device_properties(physical_device);
+    let properties = physical_device.properties();
+
+    let counts =
+        properties.framebuffer_color_sample_counts & properties.framebuffer_depth_sample_counts;
     [
-        vk::SampleCountFlags::_64,
-        vk::SampleCountFlags::_32,
-        vk::SampleCountFlags::_16,
-        vk::SampleCountFlags::_8,
-        vk::SampleCountFlags::_4,
-        vk::SampleCountFlags::_2,
+        SampleCounts::SAMPLE_64,
+        SampleCounts::SAMPLE_32,
+        SampleCounts::SAMPLE_16,
+        SampleCounts::SAMPLE_8,
+        SampleCounts::SAMPLE_4,
+        SampleCounts::SAMPLE_2,
+        SampleCounts::SAMPLE_1,
     ]
     .iter()
     .cloned()
     .find(|c| counts.contains(*c))
-    .unwrap_or(vk::SampleCountFlags::_1)
+    .unwrap_or(SampleCounts::SAMPLE_1)
 }
 
 pub unsafe fn create_color_objects(
-    instance: &Instance,
-    logical_device: &Device,
-    physical_device: vk::PhysicalDevice,
+    instance: Arc<Instance>,
+    logical_device: Arc<Device>,
+    physical_device: PhysicalDevice,
     swapchain: &g_objects::Swapchain,
-    msaa_samples: vk::SampleCountFlags,
+    msaa_samples: SampleCounts,
 ) -> Result<(vk::Image, vk::DeviceMemory, vk::ImageView)> {
     let (color_image, color_image_memory) = create_image(
         instance,

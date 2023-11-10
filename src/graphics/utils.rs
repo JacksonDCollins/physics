@@ -1,6 +1,9 @@
 use crate::graphics::objects as g_objects;
 use crate::graphics::types as g_types;
 use anyhow::{anyhow, Result};
+use ash::extensions::ext::DebugUtils;
+use ash::vk::Event;
+use winit::event_loop;
 
 use std::collections::HashSet;
 use std::ffi::CStr;
@@ -13,42 +16,46 @@ use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::io::BufReader;
 use thiserror::Error;
-use vulkanalia::bytecode::Bytecode;
-use vulkanalia::prelude::v1_2::*;
-use vulkanalia::vk::{ExtDebugUtilsExtension, KhrSurfaceExtension, KhrSwapchainExtension};
-use vulkanalia::{Entry, Version};
+// use vulkanalia::bytecode::Bytecode;
+// use vulkanalia::prelude::v1_2::*;
+// use vulkanalia::vk::{ExtDebugUtilsExtension, KhrSurfaceExtension, KhrSwapchainExtension};
+// use vulkanalia::{Entry, Version};
+use ash::{vk, Entry};
+use raw_window_handle::{
+    HasRawDisplayHandle, HasRawWindowHandle, RawDisplayHandle, RawWindowHandle,
+};
+pub use std::ptr::copy_nonoverlapping as memcpy;
 use winit::window::Window;
 
-pub use std::ptr::copy_nonoverlapping as memcpy;
-
 pub const VALIDATION_ENABLED: bool = cfg!(debug_assertions);
-pub const VALIDATION_LAYER: vk::ExtensionName =
-    vk::ExtensionName::from_bytes(b"VK_LAYER_KHRONOS_validation");
-pub const PORTABILITY_MACOS_VERSION: Version = Version::new(1, 3, 216);
-pub const DEVICE_EXTENSIONS: &[vk::ExtensionName] = &[
-    vk::KHR_SWAPCHAIN_EXTENSION.name,
-    vk::KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION.name,
-];
+pub const VALIDATION_LAYER: &CStr =
+    CStr::from_bytes_with_nul(b"VK_LAYER_KHRONOS_validation\0").unwrap();
+pub const PORTABILITY_MACOS_VERSION: u32 = vk::make_api_version(0, 1, 3, 216);
+// pub const DEVICE_EXTENSIONS: &[vk::ExtensionName] = &[
+//     vk::KHR_SWAPCHAIN_EXTENSION.name,
+//     vk::KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION.name,
+// ];
 pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 pub unsafe fn create_instance(
     window: &Window,
     entry: &Entry,
-) -> Result<(Instance, Option<vk::DebugUtilsMessengerEXT>)> {
+    event_loop: EventLoop<()>,
+) -> Result<(vk::Instance, Option<vk::DebugUtilsMessengerEXT>)> {
     let application_info = vk::ApplicationInfo::builder()
-        .application_name(b"Physics")
-        .application_version(vk::make_version(1, 0, 0))
-        .engine_name(b"No Engine")
-        .engine_version(vk::make_version(1, 0, 0))
-        .api_version(vk::make_version(1, 0, 0));
+        .application_name(&CStr::from_bytes_with_nul(b"App\0").unwrap())
+        .application_version(vk::make_api_version(0, 1, 0, 0))
+        .engine_name(&CStr::from_bytes_with_nul(b"No Engine\0").unwrap())
+        .engine_version(vk::make_api_version(0, 1, 0, 0))
+        .api_version(vk::make_api_version(0, 1, 0, 0));
 
     let available_layers = entry
         .enumerate_instance_layer_properties()?
         .iter()
-        .map(|layer| layer.layer_name)
+        .map(|layer| CStr::from_ptr(layer.layer_name.as_ptr()))
         .collect::<HashSet<_>>();
 
-    if VALIDATION_ENABLED && !available_layers.contains(&VALIDATION_LAYER) {
+    if VALIDATION_ENABLED && !available_layers.contains(VALIDATION_LAYER) {
         return Err(anyhow!("Validation layer not available"));
     }
 
@@ -58,13 +65,11 @@ pub unsafe fn create_instance(
         vec![]
     };
 
-    let mut extensions = vulkanalia::window::get_required_instance_extensions(window)
-        .iter()
-        .map(|e| e.as_ptr())
-        .collect::<Vec<_>>();
+    let mut extensions =
+        ash_window::enumerate_required_extensions(event_loop.raw_display_handle())?.to_vec();
 
     if VALIDATION_ENABLED {
-        extensions.push(vk::EXT_DEBUG_UTILS_EXTENSION.name.as_ptr());
+        extensions.push(ash::extensions::ext::DebugUtils::name().as_ptr());
     }
 
     // Required by Vulkan SDK on macOS since 1.3.216.

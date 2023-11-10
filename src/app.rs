@@ -1,19 +1,21 @@
 use crate::graphics::utils as g_utils;
 use crate::{controller, graphics, input};
 use anyhow::{anyhow, Result};
-use vulkanalia::prelude::v1_2::*;
-use vulkanalia::vk::ExtDebugUtilsExtension;
-use vulkanalia::{
-    loader::{LibloadingLoader, LIBRARY},
-    Entry,
-};
+// use vulkanalia::prelude::v1_2::*;
+// use vulkanalia::vk::ExtDebugUtilsExtension;
+// use vulkanalia::{
+//     loader::{LibloadingLoader, LIBRARY},
+//     Entry,
+// };
+use ash::{vk, Entry};
 use winit::event::WindowEvent;
+use winit::event_loop::{self, EventLoop};
 use winit::window::Window;
 
 pub struct App {
     entry: Entry,
-    instance: Instance,
-    logical_device: Device,
+    instance: vk::Instance,
+    logical_device: vk::Device,
     physical_device: vk::PhysicalDevice,
     dbg_messenger: Option<vk::DebugUtilsMessengerEXT>,
     render_engine: graphics::engine::RenderEngine,
@@ -26,10 +28,12 @@ pub struct App {
 }
 
 impl App {
-    pub unsafe fn create(window: &Window) -> Result<Self> {
-        let loader = LibloadingLoader::new(LIBRARY)?;
-        let entry = Entry::new(loader).map_err(|e| anyhow!("{}", e))?;
-        let (instance, dbg_messenger) = graphics::utils::create_instance(window, &entry)?;
+    pub unsafe fn create(window: &Window, event_loop: EventLoop<()>) -> Result<Self> {
+        // let loader = LibloadingLoader::new(LIBRARY)?;
+        // let entry = Entry::new(loader).map_err(|e| anyhow!("{}", e))?;
+        let entry = Entry::linked();
+        let (instance, dbg_messenger) =
+            graphics::utils::create_instance(window, &entry, event_loop)?;
         let surface = vulkanalia::window::create_surface(&instance, &window, &window)?;
         let (physical_device, queue_family_indices, swapchain_support, msaa_samples) =
             graphics::utils::pick_physical_device(&instance, surface)?;

@@ -28,7 +28,7 @@ fn main() -> Result<()> {
 
     window.set_cursor_visible(false);
 
-    let mut app = unsafe { App::create(&window) }?;
+    let mut app = unsafe { App::create(&window, event_loop) }?;
 
     let mut destroying = false;
     let mut minimized = false;

@@ -12,6 +12,9 @@ use crate::graphics::utils as g_utils;
 use anyhow::{anyhow, Result};
 
 use ash::util::read_spv;
+use cgmath::Euler;
+use cgmath::Quaternion;
+use cgmath::Zero;
 use rand::distributions::uniform;
 use rand::Rng;
 // use vulkanalia::prelude::v1_2::*;
@@ -285,13 +288,15 @@ pub struct InstanceBuffer {
 }
 
 impl InstanceBuffer {
-    pub unsafe fn create(positions: &[g_types::Vec3]) -> Result<Self> {
-        let model_matrixes = positions
+    pub unsafe fn create(pos_and_rot: &[(g_types::Vec3, cgmath::Quaternion<f32>)]) -> Result<Self> {
+        let model_matrixes = pos_and_rot
             .iter()
-            .map(|position| g_types::Mat4::from_translation(*position))
+            .map(|(position, rotation)| {
+                g_types::Mat4::from_translation(*position) * g_types::Mat4::from(*rotation)
+            })
             .collect::<Vec<_>>();
 
-        let size = std::mem::size_of::<g_types::Mat4>() as u64 * positions.len() as u64;
+        let size = std::mem::size_of::<g_types::Mat4>() as u64 * pos_and_rot.len() as u64;
         // println!("size {:?}", size);
 
         Ok(Self {
@@ -653,113 +658,31 @@ impl BufferMemoryAllocator {
         // self.reset_changes();
         self.changed = false;
 
-        let mut offset = 0;
-
         models.iter_mut().for_each(|model| {
-            println!(
-                "offset {} - new: {}, same: {}",
-                offset,
-                g_utils::align_up(offset, model.vertex_buffer.reqs.unwrap().alignment),
-                offset == g_utils::align_up(offset, model.vertex_buffer.reqs.unwrap().alignment)
-            );
-            offset = g_utils::align_up(offset, model.vertex_buffer.reqs.unwrap().alignment);
-            let dst = self.stage_memory_ptr.add(offset as usize).cast();
             g_utils::memcpy(
                 model.vertex_buffer.vertices.as_ptr(),
-                dst,
+                self.stage_memory_ptr
+                    .add(model.vertex_buffer.offset.unwrap() as usize)
+                    .cast(), // dst,
                 model.vertex_buffer.vertices.len(),
             );
-            model.vertex_buffer.offset = Some(offset);
-            offset += model.vertex_buffer.size;
 
-            println!(
-                "offset {} - new: {}, same: {}",
-                offset,
-                g_utils::align_up(offset, model.index_buffer.reqs.unwrap().alignment),
-                offset == g_utils::align_up(offset, model.index_buffer.reqs.unwrap().alignment)
-            );
-            offset = g_utils::align_up(offset, model.index_buffer.reqs.unwrap().alignment);
-            let dst = self.stage_memory_ptr.add(offset as usize).cast();
             g_utils::memcpy(
                 model.index_buffer.indices.as_ptr(),
-                dst,
+                self.stage_memory_ptr
+                    .add(model.index_buffer.offset.unwrap() as usize)
+                    .cast(), // dst,
                 model.index_buffer.indices.len(),
             );
-            model.index_buffer.offset = Some(offset);
-            offset += model.index_buffer.size;
 
-            println!(
-                "offset {} - new: {}, same: {}",
-                offset,
-                g_utils::align_up(offset, model.instance_buffer.reqs.unwrap().alignment),
-                offset == g_utils::align_up(offset, model.instance_buffer.reqs.unwrap().alignment)
-            );
-            offset = g_utils::align_up(offset, model.instance_buffer.reqs.unwrap().alignment);
-            let dst = self.stage_memory_ptr.add(offset as usize).cast();
             g_utils::memcpy(
                 model.instance_buffer.model_matrixes.as_ptr(),
-                dst,
+                self.stage_memory_ptr
+                    .add(model.instance_buffer.offset.unwrap() as usize)
+                    .cast(), // dst,
                 model.instance_buffer.model_matrixes.len(),
             );
-            model.instance_buffer.offset = Some(offset);
-            offset += model.instance_buffer.size;
         });
-
-        // models
-        //     .iter_mut()
-        //     .map(|model| &mut model.vertex_buffer)
-        //     .for_each(|buffer| {
-        //         println!(
-        //             "offset {} - new: {}, same: {}",
-        //             offset,
-        //             g_utils::align_up(offset, buffer.reqs.unwrap().alignment),
-        //             offset == g_utils::align_up(offset, buffer.reqs.unwrap().alignment)
-        //         );
-        //         offset = g_utils::align_up(offset, buffer.reqs.unwrap().alignment);
-        //         let dst = self.stage_memory_ptr.add(offset as usize).cast();
-        //         g_utils::memcpy(buffer.vertices.as_ptr(), dst, buffer.vertices.len());
-        //         buffer.offset = Some(offset);
-        //         offset += buffer.size;
-        //     });
-
-        // models
-        //     .iter_mut()
-        //     .map(|model| &mut model.index_buffer)
-        //     .for_each(|buffer| {
-        //         println!(
-        //             "offset {} - new: {}, same: {}",
-        //             offset,
-        //             g_utils::align_up(offset, buffer.reqs.unwrap().alignment),
-        //             offset == g_utils::align_up(offset, buffer.reqs.unwrap().alignment)
-        //         );
-        //         offset = g_utils::align_up(offset, buffer.reqs.unwrap().alignment);
-        //         let dst = self.stage_memory_ptr.add(offset as usize).cast();
-        //         g_utils::memcpy(buffer.indices.as_ptr(), dst, buffer.indices.len());
-        //         buffer.offset = Some(offset);
-        //         offset += buffer.size;
-        //     });
-
-        // models
-        //     .iter_mut()
-        //     .map(|model| &mut model.instance_buffer)
-        //     .for_each(|buffer| {
-        //         println!(
-        //             "offset {} - new: {}, same: {}",
-        //             offset,
-        //             g_utils::align_up(offset, buffer.reqs.unwrap().alignment),
-        //             offset == g_utils::align_up(offset, buffer.reqs.unwrap().alignment)
-        //         );
-        //         offset = g_utils::align_up(offset, buffer.reqs.unwrap().alignment);
-        //         let dst = self.stage_memory_ptr.add(offset as usize).cast();
-        //         g_utils::memcpy(
-        //             buffer.model_matrixes.as_ptr(),
-        //             dst,
-        //             buffer.model_matrixes.len(),
-        //         );
-
-        //         buffer.offset = Some(offset);
-        //         offset += buffer.size;
-        //     });
 
         g_utils::copy_buffer(
             logical_device,
@@ -1196,7 +1119,7 @@ impl Model {
         // msaa_samples: vk::SampleCountFlags,
         // render_pass: vk::RenderPass,
         // swapchain_images_count: u32,
-        positions: &[g_types::Vec3],
+        pos_and_rot: &[(g_types::Vec3, cgmath::Quaternion<f32>)],
     ) -> Result<Self> {
         let (vertices, indices) = g_utils::load_model(path)?;
 
@@ -1204,7 +1127,7 @@ impl Model {
 
         let index_buffer = IndexBuffer::create(&indices)?;
 
-        let instance_buffer = InstanceBuffer::create(positions)?;
+        let instance_buffer = InstanceBuffer::create(pos_and_rot)?;
 
         let texture = Texture::create(texture_path)?;
 
@@ -1228,7 +1151,7 @@ impl Model {
             texture,
             descriptor_pool,
             descriptor_sets,
-            instance_count: positions.len() as u32,
+            instance_count: pos_and_rot.len() as u32,
         })
     }
 
@@ -1454,7 +1377,7 @@ impl Model {
             .rasterizer_discard_enable(false)
             .polygon_mode(vk::PolygonMode::FILL)
             .line_width(1.0)
-            .cull_mode(vk::CullModeFlags::BACK)
+            .cull_mode(vk::CullModeFlags::NONE)
             .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
             .depth_bias_enable(false);
 
@@ -1760,12 +1683,12 @@ impl ModelManager {
         // render_pass: vk::RenderPass,
         // swapchain_images_count: u32,
     ) -> Result<()> {
-        for (model_name, positions) in scene.models.iter() {
+        for (model_name, pos_and_rot) in scene.models.iter() {
             let model = Model::create(
                 &format!("resources/{}/{}.obj", model_name, model_name),
                 &format!("resources/{}/{}.png", model_name, model_name),
                 logical_device,
-                positions,
+                pos_and_rot,
             )?;
             self.add_model(model_name, model);
         }
@@ -1794,6 +1717,26 @@ impl ModelManager {
         Ok(())
     }
 
+    pub unsafe fn calculate_buffer_offsets_and_size(&mut self) -> u64 {
+        let mut acc = 0;
+
+        for model in self.models.values_mut() {
+            acc = g_utils::align_up(acc, model.vertex_buffer.reqs.unwrap().alignment);
+            model.vertex_buffer.offset = Some(acc);
+            acc += model.vertex_buffer.get_required_size();
+
+            acc = g_utils::align_up(acc, model.index_buffer.reqs.unwrap().alignment);
+            model.index_buffer.offset = Some(acc);
+            acc += model.index_buffer.get_required_size();
+
+            acc = g_utils::align_up(acc, model.instance_buffer.reqs.unwrap().alignment);
+            model.instance_buffer.offset = Some(acc);
+            acc += model.instance_buffer.get_required_size();
+        }
+
+        acc
+    }
+
     pub unsafe fn allocate_memory_for_buffers(
         &mut self,
         instance: &ash::Instance,
@@ -1802,11 +1745,9 @@ impl ModelManager {
         queue_set: &g_utils::QueueSet,
         command_pool_set: g_types::CommandPoolSet,
     ) -> Result<()> {
-        let size = self.models.values().fold(0, |acc, model| {
-            acc + model.vertex_buffer.get_required_size()
-                + model.index_buffer.get_required_size()
-                + model.instance_buffer.get_required_size()
-        });
+        let size = self.calculate_buffer_offsets_and_size();
+
+        println!("size: {}", size);
 
         self.buffer_allocator
             .create_memories(instance, logical_device, physical_device, size)?;
@@ -1817,11 +1758,12 @@ impl ModelManager {
             command_pool_set,
             &mut self
                 .models
-                .iter_mut()
-                .map(|(name, model)| {
-                    println!("name: {}", name);
-                    model
-                })
+                // .iter_mut()
+                // .map(|(name, model)| {
+                //     println!("name: {}", name);
+                //     model
+                // })
+                .values_mut()
                 .collect::<Vec<_>>(),
             size,
         )?;
@@ -1853,7 +1795,7 @@ impl ModelManager {
 }
 
 pub struct Scene {
-    models: HashMap<String, Vec<g_types::Vec3>>,
+    models: HashMap<String, Vec<(g_types::Vec3, cgmath::Quaternion<f32>)>>,
     // instanced_models: HashMap<String, Vec<g_types::Vec3>>,
 }
 
@@ -1862,23 +1804,36 @@ impl Scene {
         let mut rng = rand::thread_rng();
         Ok(Self {
             models: [
-                ("landscape", vec![g_types::vec3(0.0, 0.0, 0.0)]),
-                ("viking_room", vec![g_types::vec3(0.0, 0.0, 4.0)]),
+                (
+                    "landscape",
+                    vec![(g_types::vec3(0.0, 0.0, 0.0), Quaternion::zero())],
+                ),
+                (
+                    "viking_room",
+                    vec![(g_types::vec3(0.0, 0.0, 4.0), Quaternion::zero())],
+                ),
                 (
                     "sphere",
-                    (0..10)
+                    (0..100)
                         .map(|_| {
-                            g_types::vec3(
-                                rng.gen_range(-10.0..10.0),
-                                rng.gen_range(-10.0..10.0),
-                                rng.gen_range(0.0..10.0),
+                            (
+                                g_types::vec3(
+                                    rng.gen_range(-10.0..=10.0),
+                                    rng.gen_range(-10.0..=10.0),
+                                    rng.gen_range(5.0..=15.0),
+                                ),
+                                Quaternion::from(Euler {
+                                    x: g_types::Deg(rng.gen_range(0.0..=360.0)),
+                                    y: g_types::Deg(rng.gen_range(0.0..=360.0)),
+                                    z: g_types::Deg(rng.gen_range(0.0..=360.0)),
+                                }),
                             )
                         })
                         .collect(),
                 ),
             ]
             .into_iter()
-            .map(|(name, pos)| (name.to_string(), pos))
+            .map(|(name, pos_and_rot)| (name.to_string(), pos_and_rot))
             .collect::<HashMap<_, _>>(),
         })
     }

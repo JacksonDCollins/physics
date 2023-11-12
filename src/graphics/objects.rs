@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ffi::CStr;
+use std::fs;
 use std::fs::File;
 use std::hash::Hash;
 use std::io::Cursor;
@@ -17,14 +18,16 @@ use cgmath::Quaternion;
 use cgmath::Zero;
 use rand::distributions::uniform;
 use rand::Rng;
-// use vulkanalia::prelude::v1_2::*;
-// use vulkanalia::vk::KhrSwapchainExtension;
+
 use ash::vk;
 
 use winit::window::Window;
 
+use super::types::AttributeDescriptions;
+use super::types::BindingDescription;
 use super::types::Vertex;
 use super::utils::IsNull;
+use super::utils::SHADER_FILES;
 
 pub struct Swapchain {
     pub swapchain_loader: ash::extensions::khr::Swapchain,
@@ -75,11 +78,7 @@ impl Swapchain {
 }
 
 pub struct Pipeline {
-    // descriptor_set_layout: vk::DescriptorSetLayout,
-    // descriptor_pool: vk::DescriptorPool,
-    // pub pipeline_layout: vk::PipelineLayout,
     pub render_pass: vk::RenderPass,
-    // pub pipeline: vk::Pipeline,
 }
 
 impl Pipeline {
@@ -89,7 +88,6 @@ impl Pipeline {
         physical_device: vk::PhysicalDevice,
         swapchain: &Swapchain,
         msaa_samples: vk::SampleCountFlags,
-        // model_manager: &mut ModelManager,
     ) -> Result<Self> {
         let render_pass = g_utils::create_render_pass(
             instance,
@@ -99,26 +97,15 @@ impl Pipeline {
             msaa_samples,
         )?;
 
-        Ok(Self {
-            // descriptor_set_layout,
-            // descriptor_pool,
-            // pipeline_layout,
-            render_pass,
-            // pipeline,
-        })
+        Ok(Self { render_pass })
     }
 
     pub unsafe fn destroy(&self, logical_device: &ash::Device) {
-        // logical_device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
-        // logical_device.destroy_descriptor_pool(self.descriptor_pool, None);
-        // logical_device.destroy_pipeline(self.pipeline, None);
         logical_device.destroy_render_pass(self.render_pass, None);
-        // logical_device.destroy_pipeline_layout(self.pipeline_layout, None);
     }
 }
 
 pub struct Presenter {
-    // pub descriptor_sets: Vec<vk::DescriptorSet>,
     pub command_pool_sets: Vec<g_types::CommandPoolSet>,
     pub master_command_pool_set: g_types::CommandPoolSet,
     depth_image: vk::Image,
@@ -148,13 +135,6 @@ impl Presenter {
         queue_set: &g_utils::QueueSet,
         msaa_samples: vk::SampleCountFlags,
     ) -> Result<Self> {
-        // let descriptor_sets = g_utils::create_descriptor_sets(
-        //     logical_device,
-        //     pipeline.descriptor_set_layout,
-        //     pipeline.descriptor_pool,
-        //     swapchain.images.len(),
-        // )?;
-
         let master_command_pool_set =
             g_utils::create_command_pool_set(logical_device, queue_family_indices)?;
 
@@ -200,19 +180,15 @@ impl Presenter {
             master_command_pool_set,
         )?;
 
-        model_manager
-            // .texture_engine
-            .create_textures(instance, logical_device, physical_device)?;
+        model_manager.create_textures(instance, logical_device, physical_device)?;
 
-        model_manager
-            //.texture_engine
-            .allocate_texture_memory(
-                instance,
-                logical_device,
-                physical_device,
-                queue_set,
-                master_command_pool_set,
-            )?;
+        model_manager.allocate_texture_memory(
+            instance,
+            logical_device,
+            physical_device,
+            queue_set,
+            master_command_pool_set,
+        )?;
 
         model_manager.update_descriptor_sets(logical_device, swapchain.images.len())?;
 
@@ -232,7 +208,6 @@ impl Presenter {
         ) = g_utils::create_sync_objects(logical_device, swapchain.images.len())?;
 
         Ok(Self {
-            // descriptor_sets,
             framebuffers,
             command_pool_sets,
             master_command_pool_set,
@@ -297,10 +272,9 @@ impl InstanceBuffer {
             .collect::<Vec<_>>();
 
         let size = std::mem::size_of::<g_types::Mat4>() as u64 * pos_and_rot.len() as u64;
-        // println!("size {:?}", size);
 
         Ok(Self {
-            buffer: vk::Buffer::null(), //vertex_buffer,
+            buffer: vk::Buffer::null(),
             size,
             offset: None,
             changed: false,
@@ -356,7 +330,7 @@ impl VertexBuffer {
         let size = std::mem::size_of_val(vertices) as u64;
 
         Ok(Self {
-            buffer: vk::Buffer::null(), //vertex_buffer,
+            buffer: vk::Buffer::null(),
             vertices: vertices.to_vec(),
             size,
             offset: None,
@@ -409,7 +383,7 @@ impl UniformBuffer {
         let size = std::mem::size_of::<g_types::UniformBufferObject>() as u64;
 
         Ok(Self {
-            buffer: vk::Buffer::null(), //uniform_buffer,
+            buffer: vk::Buffer::null(),
             ubo,
             size,
             offset: None,
@@ -462,7 +436,7 @@ impl IndexBuffer {
         let size = std::mem::size_of_val(indices) as u64;
 
         Ok(Self {
-            buffer: vk::Buffer::null(), // index_buffer,
+            buffer: vk::Buffer::null(),
             indices: indices.to_vec(),
             size,
             offset: None,
@@ -512,8 +486,7 @@ pub struct BufferMemoryAllocator {
     pub staging_memory: vk::DeviceMemory,
     pub staging_buffer: vk::Buffer,
     pub stage_memory_ptr: *mut c_void,
-    // pub vertex_buffers_to_allocate: Vec<VertexBuffer>,
-    // pub index_buffer_to_allocate: IndexBuffer,
+
     pub uniform_buffers_to_allocate: Vec<UniformBuffer>,
     pub changed: bool,
 }
@@ -529,8 +502,7 @@ impl BufferMemoryAllocator {
             staging_buffer: vk::Buffer::null(),
             staging_memory: vk::DeviceMemory::null(),
             stage_memory_ptr: std::ptr::null_mut(),
-            // vertex_buffers_to_allocate: Vec::new(),
-            // index_buffer_to_allocate: IndexBuffer::null(),
+
             uniform_buffers_to_allocate: Vec::new(),
             changed: true,
         })
@@ -651,11 +623,10 @@ impl BufferMemoryAllocator {
         models: &mut [&mut Model],
         size: u64,
     ) -> Result<()> {
-        // self.check_for_changes();
         if !self.changed {
             return Ok(());
         }
-        // self.reset_changes();
+
         self.changed = false;
 
         models.iter_mut().for_each(|model| {
@@ -663,7 +634,7 @@ impl BufferMemoryAllocator {
                 model.vertex_buffer.vertices.as_ptr(),
                 self.stage_memory_ptr
                     .add(model.vertex_buffer.offset.unwrap() as usize)
-                    .cast(), // dst,
+                    .cast(),
                 model.vertex_buffer.vertices.len(),
             );
 
@@ -671,7 +642,7 @@ impl BufferMemoryAllocator {
                 model.index_buffer.indices.as_ptr(),
                 self.stage_memory_ptr
                     .add(model.index_buffer.offset.unwrap() as usize)
-                    .cast(), // dst,
+                    .cast(),
                 model.index_buffer.indices.len(),
             );
 
@@ -679,7 +650,7 @@ impl BufferMemoryAllocator {
                 model.instance_buffer.model_matrixes.as_ptr(),
                 self.stage_memory_ptr
                     .add(model.instance_buffer.offset.unwrap() as usize)
-                    .cast(), // dst,
+                    .cast(),
                 model.instance_buffer.model_matrixes.len(),
             );
         });
@@ -790,7 +761,6 @@ impl BufferMemoryAllocator {
 }
 
 pub struct TextureMemoryAllocator {
-    // pub textures: Vec<Texture>,
     pub staging_buffer: vk::Buffer,
     pub staging_memory: vk::DeviceMemory,
     pub staging_memory_ptr: *mut c_void,
@@ -801,11 +771,10 @@ pub struct TextureMemoryAllocator {
 impl TextureMemoryAllocator {
     pub unsafe fn create() -> Result<Self> {
         Ok(Self {
-            // textures: Vec::new(),
             staging_buffer: vk::Buffer::null(),
             staging_memory: vk::DeviceMemory::null(),
             staging_memory_ptr: std::ptr::null_mut(),
-            texture_memorys: HashMap::new(), //vk::DeviceMemory::null(),
+            texture_memorys: HashMap::new(),
             changed: true,
         })
     }
@@ -837,7 +806,6 @@ impl TextureMemoryAllocator {
         logical_device: &ash::Device,
         physical_device: vk::PhysicalDevice,
         models: &mut HashMap<&String, &mut Model>,
-        // instanced_models: &mut HashMap<&String, &mut InstancedModel>,
     ) -> Result<()> {
         for model in models.values_mut() {
             model
@@ -856,13 +824,11 @@ impl TextureMemoryAllocator {
         queue_set: &g_utils::QueueSet,
         command_pool_set: &g_types::CommandPoolSet,
         models: &mut HashMap<&String, &mut Model>,
-        // instanced_models: &mut HashMap<&String, &mut InstancedModel>,
     ) -> Result<()> {
-        // self.check_for_changes();
         if !self.changed {
             return Ok(());
         }
-        // self.reset_changes();
+
         self.changed = false;
 
         let memory_type_indexes = models
@@ -1001,7 +967,7 @@ pub struct Texture {
     pub image: vk::Image,
     pub sampler: vk::Sampler,
     pub pixels: Vec<u8>,
-    // pub image_memory: vk::DeviceMemory,
+
     pub image_view: vk::ImageView,
     pub pixels_size: u64,
     pub reqs: Option<vk::MemoryRequirements>,
@@ -1093,7 +1059,6 @@ impl Texture {
         logical_device.destroy_sampler(self.sampler, None);
         logical_device.destroy_image_view(self.image_view, None);
         logical_device.destroy_image(self.image, None);
-        // logical_device.free_memory(self.image_memory, None);
     }
 }
 
@@ -1116,9 +1081,7 @@ impl Model {
         path: &str,
         texture_path: &str,
         logical_device: &ash::Device,
-        // msaa_samples: vk::SampleCountFlags,
-        // render_pass: vk::RenderPass,
-        // swapchain_images_count: u32,
+
         pos_and_rot: &[(g_types::Vec3, cgmath::Quaternion<f32>)],
     ) -> Result<Self> {
         let (vertices, indices) = g_utils::load_model(path)?;
@@ -1272,18 +1235,16 @@ impl Model {
         render_pass: vk::RenderPass,
         extent: vk::Extent2D,
     ) -> Result<()> {
-        let (mut vert, mut frag) = {
-            (
-                Cursor::new(&include_bytes!("../../shaders/instanced_vert.spv")),
-                Cursor::new(&include_bytes!("../../shaders/instanced_frag.spv")),
-            )
-        };
-
-        let vert_code = read_spv(&mut vert)?;
-        let frag_code = read_spv(&mut frag)?;
+        let vert_code = read_spv(&mut fs::File::open(
+            SHADER_FILES.get("instanced.vert").unwrap(),
+        )?)?;
+        let frag_code = read_spv(&mut fs::File::open(
+            SHADER_FILES.get("instanced.frag").unwrap(),
+        )?)?;
 
         let vert_shader_module = g_utils::create_shader_module(logical_device, &vert_code)?;
         let frag_shader_module = g_utils::create_shader_module(logical_device, &frag_code)?;
+
         let vert_stage = vk::PipelineShaderStageCreateInfo::builder()
             .stage(vk::ShaderStageFlags::VERTEX)
             .module(vert_shader_module)
@@ -1297,51 +1258,18 @@ impl Model {
             .build();
 
         let binding_descriptions = &[
-            g_types::Vertex::binding_description(),
-            vk::VertexInputBindingDescription::builder()
-                .binding(1)
-                .stride(std::mem::size_of::<g_types::Mat4>() as u32)
-                .input_rate(vk::VertexInputRate::INSTANCE)
-                .build(),
+            g_types::Vertex::binding_description(0, vk::VertexInputRate::VERTEX),
+            g_types::Mat4::binding_description(1, vk::VertexInputRate::INSTANCE),
         ];
-        let attribute_descriptions = g_types::Vertex::attribute_descriptions()
-            .iter()
-            .chain(&[
-                vk::VertexInputAttributeDescription::builder()
-                    .binding(1)
-                    .location(3)
-                    .format(vk::Format::R32G32B32A32_SFLOAT)
-                    .offset(0)
-                    .build(),
-                vk::VertexInputAttributeDescription::builder()
-                    .binding(1)
-                    .location(4)
-                    .format(vk::Format::R32G32B32A32_SFLOAT)
-                    .offset((size_of::<g_types::Vec4>()) as u32)
-                    .build(),
-                vk::VertexInputAttributeDescription::builder()
-                    .binding(1)
-                    .location(5)
-                    .format(vk::Format::R32G32B32A32_SFLOAT)
-                    .offset((size_of::<g_types::Vec4>() + size_of::<g_types::Vec4>()) as u32)
-                    .build(),
-                vk::VertexInputAttributeDescription::builder()
-                    .binding(1)
-                    .location(6)
-                    .format(vk::Format::R32G32B32A32_SFLOAT)
-                    .offset(
-                        (size_of::<g_types::Vec4>()
-                            + size_of::<g_types::Vec4>()
-                            + size_of::<g_types::Vec4>()) as u32,
-                    )
-                    .build(),
-            ])
-            .cloned()
-            .collect::<Vec<_>>();
+        let attribute_descriptions = &[
+            g_types::Vertex::attribute_descriptions(0, 0),
+            g_types::Mat4::attribute_descriptions(1, 3),
+        ]
+        .concat();
 
         let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::builder()
             .vertex_binding_descriptions(binding_descriptions)
-            .vertex_attribute_descriptions(&attribute_descriptions)
+            .vertex_attribute_descriptions(attribute_descriptions)
             .build();
 
         let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::builder()
@@ -1377,7 +1305,7 @@ impl Model {
             .rasterizer_discard_enable(false)
             .polygon_mode(vk::PolygonMode::FILL)
             .line_width(1.0)
-            .cull_mode(vk::CullModeFlags::NONE)
+            .cull_mode(vk::CullModeFlags::BACK)
             .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
             .depth_bias_enable(false);
 
@@ -1386,10 +1314,10 @@ impl Model {
             .depth_write_enable(true)
             .depth_compare_op(vk::CompareOp::LESS)
             .depth_bounds_test_enable(false)
-            .min_depth_bounds(0.0) // Optional.
-            .max_depth_bounds(1.0) // Optional.
+            .min_depth_bounds(0.0)
+            .max_depth_bounds(1.0)
             .stencil_test_enable(false)
-            .build(); // Optional.
+            .build();
 
         let multisample_state = vk::PipelineMultisampleStateCreateInfo::builder()
             .sample_shading_enable(false)
@@ -1443,17 +1371,11 @@ impl Model {
         &self,
         logical_device: &ash::Device,
         command_buffer: vk::CommandBuffer,
-        position: &g_types::Vec3,
+        view: &g_types::Mat4,
+        proj: &g_types::Mat4,
     ) {
-        // let y = (((model_index % 2) as f32) * 2.5) - 1.25;
-        // let z = (((model_index / 2) as f32) * -2.0) + 1.0;
-
-        // self.set_position(g_types::vec3(0.0, y, z));
-
-        let model_mat = g_types::Mat4::from_translation(*position);
-        // * g_types::Mat4::from_axis_angle(g_types::vec3(0.0, 0.0, 1.0), g_types::Deg(90.0));
-        let model_bytes = std::slice::from_raw_parts(
-            &model_mat as *const g_types::Mat4 as *const u8,
+        let view_bytes = std::slice::from_raw_parts(
+            view as *const g_types::Mat4 as *const u8,
             size_of::<g_types::Mat4>(),
         );
 
@@ -1462,20 +1384,21 @@ impl Model {
             self.pipeline_layout,
             vk::ShaderStageFlags::VERTEX,
             0,
-            model_bytes,
+            view_bytes,
         );
 
-        // logical_device.cmd_push_constants(
-        //     command_buffer,
-        //     self.pipeline_layout,
-        //     vk::ShaderStageFlags::FRAGMENT,
-        //     64,
-        //     &[
-        //         (model_index % 2).to_ne_bytes(),
-        //         (model_index % 2).to_ne_bytes(),
-        //     ]
-        //     .concat(),
-        // );
+        let proj_bytes = std::slice::from_raw_parts(
+            proj as *const g_types::Mat4 as *const u8,
+            size_of::<g_types::Mat4>(),
+        );
+
+        logical_device.cmd_push_constants(
+            command_buffer,
+            self.pipeline_layout,
+            vk::ShaderStageFlags::VERTEX,
+            size_of::<g_types::Mat4>() as u32,
+            proj_bytes,
+        );
     }
 
     pub unsafe fn draw_models(
@@ -1483,6 +1406,8 @@ impl Model {
         logical_device: &ash::Device,
         command_buffer: vk::CommandBuffer,
         image_index: usize,
+        view: &g_types::Mat4,
+        proj: &g_types::Mat4,
     ) -> Result<()> {
         logical_device.cmd_bind_pipeline(
             command_buffer,
@@ -1516,7 +1441,7 @@ impl Model {
             &[],
         );
 
-        // self.push_constants(logical_device, command_buffer, position);
+        self.push_constants(logical_device, command_buffer, view, proj);
 
         logical_device.cmd_draw_indexed(
             command_buffer,
@@ -1544,7 +1469,7 @@ impl Model {
 
 pub struct ModelManager {
     pub models: HashMap<String, Model>,
-    // pub instanced_models: HashMap<String, InstancedModel>,
+
     pub buffer_allocator: BufferMemoryAllocator,
     pub texture_engine: TextureMemoryAllocator,
 }
@@ -1556,7 +1481,7 @@ impl ModelManager {
 
         Ok(Self {
             models: HashMap::new(),
-            // instanced_models: HashMap::new(),
+
             buffer_allocator,
             texture_engine,
         })
@@ -1573,11 +1498,6 @@ impl ModelManager {
             model.create_pipeline(logical_device, msaa_samples, render_pass, extent)?;
         }
 
-        // for model in self.instanced_models.values_mut() {
-        //     logical_device.destroy_pipeline(model.pipeline, None);
-        //     model.create_pipeline(logical_device, msaa_samples, render_pass, extent)?;
-        // }
-
         Ok(())
     }
 
@@ -1592,10 +1512,6 @@ impl ModelManager {
             model.create_pipeline(logical_device, msaa_samples, render_pass, extent)?;
         }
 
-        // for model in self.instanced_models.values_mut() {
-        //     model.create_pipeline(logical_device, msaa_samples, render_pass, extent)?;
-        // }
-
         Ok(())
     }
 
@@ -1608,9 +1524,6 @@ impl ModelManager {
             model.create_descriptor_pool_and_sets(logical_device, swapchain_images_count)?;
         }
 
-        // for model in self.instanced_models.values_mut() {
-        //     model.create_descriptor_pool_and_sets(logical_device, swapchain_images_count)?;
-        // }
         Ok(())
     }
 
@@ -1626,14 +1539,6 @@ impl ModelManager {
                 &self.buffer_allocator.uniform_buffers_to_allocate,
             )?;
         }
-
-        // for model in self.instanced_models.values_mut() {
-        //     model.update_descriptor_sets(
-        //         logical_device,
-        //         swapchain_images_count,
-        //         &self.buffer_allocator.uniform_buffers_to_allocate,
-        //     )?;
-        // }
 
         Ok(())
     }
@@ -1653,7 +1558,6 @@ impl ModelManager {
             queue_set,
             &command_pool_set,
             &mut self.models.iter_mut().collect::<HashMap<_, _>>(),
-            // &mut self.instanced_models.iter_mut().collect::<HashMap<_, _>>(),
         )?;
 
         Ok(())
@@ -1669,7 +1573,6 @@ impl ModelManager {
             logical_device,
             physical_device,
             &mut self.models.iter_mut().collect::<HashMap<_, _>>(),
-            // &mut self.instanced_models.iter_mut().collect::<HashMap<_, _>>(),
         )?;
 
         Ok(())
@@ -1679,9 +1582,6 @@ impl ModelManager {
         &mut self,
         scene: &Scene,
         logical_device: &ash::Device,
-        // msaa_samples: vk::SampleCountFlags,
-        // render_pass: vk::RenderPass,
-        // swapchain_images_count: u32,
     ) -> Result<()> {
         for (model_name, pos_and_rot) in scene.models.iter() {
             let model = Model::create(
@@ -1693,26 +1593,12 @@ impl ModelManager {
             self.add_model(model_name, model);
         }
 
-        // for (model_name, positions) in scene.instanced_models.iter() {
-        //     let instanced_model = InstancedModel::create(
-        //         &format!("resources/{}/{}.obj", model_name, model_name),
-        //         &format!("resources/{}/{}.png", model_name, model_name),
-        //         logical_device,
-        //         positions,
-        //     )?;
-
-        //     self.add_instanced_model(model_name, instanced_model);
-        // }
-
         Ok(())
     }
 
     pub unsafe fn create_buffers(&mut self, logical_device: &ash::Device) -> Result<()> {
         self.buffer_allocator
             .create_buffers(logical_device, &mut self.models)?;
-
-        // self.buffer_allocator
-        //     .create_instanced_buffers(logical_device, &mut self.instanced_models)?;
 
         Ok(())
     }
@@ -1756,15 +1642,7 @@ impl ModelManager {
             logical_device,
             queue_set,
             command_pool_set,
-            &mut self
-                .models
-                // .iter_mut()
-                // .map(|(name, model)| {
-                //     println!("name: {}", name);
-                //     model
-                // })
-                .values_mut()
-                .collect::<Vec<_>>(),
+            &mut self.models.values_mut().collect::<Vec<_>>(),
             size,
         )?;
 
@@ -1775,18 +1653,10 @@ impl ModelManager {
         self.models.insert(name.to_string(), model);
     }
 
-    // pub unsafe fn add_instanced_model(&mut self, name: &str, model: InstancedModel) {
-    //     self.instanced_models.insert(name.to_string(), model);
-    // }
-
     pub unsafe fn destroy(&mut self, logical_device: &ash::Device) {
         self.models
             .values_mut()
             .for_each(|model| model.destroy(logical_device));
-
-        // self.instanced_models
-        //     .values_mut()
-        //     .for_each(|model| model.destroy(logical_device));
 
         self.texture_engine.destroy(logical_device);
 
@@ -1796,7 +1666,6 @@ impl ModelManager {
 
 pub struct Scene {
     models: HashMap<String, Vec<(g_types::Vec3, cgmath::Quaternion<f32>)>>,
-    // instanced_models: HashMap<String, Vec<g_types::Vec3>>,
 }
 
 impl Scene {
@@ -1814,13 +1683,13 @@ impl Scene {
                 ),
                 (
                     "sphere",
-                    (0..100)
+                    (0..10000)
                         .map(|_| {
                             (
                                 g_types::vec3(
-                                    rng.gen_range(-10.0..=10.0),
-                                    rng.gen_range(-10.0..=10.0),
-                                    rng.gen_range(5.0..=15.0),
+                                    rng.gen_range(-100.0..=100.0),
+                                    rng.gen_range(-100.0..=100.0),
+                                    rng.gen_range(5.0..=150.0),
                                 ),
                                 Quaternion::from(Euler {
                                     x: g_types::Deg(rng.gen_range(0.0..=360.0)),
@@ -1844,12 +1713,13 @@ impl Scene {
         model_manager: &ModelManager,
         logical_device: &ash::Device,
         command_buffer: vk::CommandBuffer,
+        view: &g_types::Mat4,
+        proj: &g_types::Mat4,
     ) -> Result<()> {
         for (_model_index, (model_name, _positions)) in self.models.iter().enumerate() {
-            // println!("{}", model_name);
             let model = model_manager.models.get(model_name).unwrap();
 
-            model.draw_models(logical_device, command_buffer, image_index)?;
+            model.draw_models(logical_device, command_buffer, image_index, view, proj)?;
         }
 
         Ok(())

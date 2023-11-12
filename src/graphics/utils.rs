@@ -14,8 +14,9 @@ use std::ffi::CStr;
 
 use std::os::raw::c_void;
 
+use lazy_static::lazy_static;
+use std::collections::HashMap;
 use std::fs::File;
-
 use std::io::BufReader;
 use thiserror::Error;
 // use vulkanalia::bytecode::Bytecode;
@@ -27,12 +28,20 @@ use ash::{vk, Entry};
 pub use std::ptr::copy_nonoverlapping as memcpy;
 use winit::window::Window;
 
-pub const VALIDATION_ENABLED: bool = cfg!(debug_assertions);
+pub const VALIDATION_ENABLED: bool = false; //cfg!(debug_assertions);
 pub const VALIDATION_LAYER: &CStr =
     unsafe { CStr::from_bytes_with_nul_unchecked(b"VK_LAYER_KHRONOS_validation\0") };
 pub const PORTABILITY_MACOS_VERSION: u32 = vk::make_api_version(0, 1, 3, 216);
 pub const DEVICE_EXTENSIONS: &[&CStr] = &[ash::extensions::khr::Swapchain::name()];
 pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
+
+lazy_static! {
+    pub static ref SHADER_FILES: HashMap<String, String> = {
+        let files_json = std::fs::read_to_string("shaders/out_file.json")
+            .expect("failed to read shaders/files.json");
+        serde_json::from_str(&files_json).expect("invalid taxes json")
+    };
+}
 
 pub unsafe fn create_instance(
     entry: &Entry,
@@ -549,17 +558,17 @@ pub unsafe fn create_pipeline_layout(
     let vert_push_constant_range = vk::PushConstantRange::builder()
         .stage_flags(vk::ShaderStageFlags::VERTEX)
         .offset(0)
-        .size(64 /* 16 × 4 byte floats */)
+        .size(128 /*2 *  16 × 4 byte floats */)
         .build();
 
-    let frag_push_constant_range = vk::PushConstantRange::builder()
-        .stage_flags(vk::ShaderStageFlags::FRAGMENT)
-        .offset(64)
-        .size(16 /* 2 x 4 byte ints */)
-        .build();
+    // let frag_push_constant_range = vk::PushConstantRange::builder()
+    //     .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+    //     .offset(64)
+    //     .size(16 /* 2 x 4 byte ints */)
+    //     .build();
 
     let set_layouts = &[descriptor_set_layout];
-    let push_constant_ranges = &[vert_push_constant_range, frag_push_constant_range];
+    let push_constant_ranges = &[vert_push_constant_range];
     let layout_info = vk::PipelineLayoutCreateInfo::builder()
         .set_layouts(set_layouts)
         .push_constant_ranges(push_constant_ranges);
@@ -570,7 +579,7 @@ pub unsafe fn create_pipeline_layout(
 
 pub unsafe fn create_shader_module(
     logical_device: &ash::Device,
-    bytecode: &Vec<u32>,
+    bytecode: &[u32],
 ) -> Result<vk::ShaderModule> {
     // let bytecode = Bytecode::new(bytecode).unwrap();
 

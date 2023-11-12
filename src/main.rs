@@ -5,6 +5,8 @@ pub mod graphics;
 pub mod input;
 
 use anyhow::Result;
+use lazy_static::lazy_static;
+use std::time::Duration;
 
 use winit::{
     event::{DeviceEvent, Event, KeyboardInput, VirtualKeyCode, WindowEvent},
@@ -14,7 +16,14 @@ use winit::{
 
 use app::App;
 
+const TPS: u32 = 240;
+
+lazy_static! {
+    static ref ALLOWED_DT: Duration = Duration::from_secs_f32(1.0 / TPS as f32);
+}
+
 fn main() -> Result<()> {
+    println!("{:?}", crate::graphics::utils::SHADER_FILES.keys());
     pretty_env_logger::init();
 
     let event_loop = EventLoop::new();
@@ -34,10 +43,10 @@ fn main() -> Result<()> {
     let mut minimized = false;
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
-
+        let now = std::time::Instant::now();
         match event {
             Event::MainEventsCleared if !destroying && !minimized => {
-                app.tick();
+                app.tick(now);
                 unsafe { app.render(&window) }.unwrap();
             }
             Event::DeviceEvent {

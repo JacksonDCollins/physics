@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::graphics::types::{self as g_types, Vec3};
 
-use cgmath::{Angle, InnerSpace};
+use cgmath::{Angle, InnerSpace, Zero};
 use winit::event::{ElementState, VirtualKeyCode};
 
 pub struct Camera {
@@ -27,39 +27,52 @@ impl Camera {
             pitch: cgmath::Rad(0.0),
             yaw: cgmath::Rad(0.0),
             roll: cgmath::Rad(0.0),
-            movement_speed: 0.01,
+            movement_speed: 1.,
             mouse_sensitivity: 0.005,
         }
     }
 
-    pub fn update(&mut self, keydata: &HashMap<VirtualKeyCode, ElementState>) {
+    pub fn update(
+        &mut self,
+        keydata: &HashMap<VirtualKeyCode, ElementState>,
+        dt: std::time::Duration,
+    ) {
+        let dist_to_travel = self.movement_speed * dt.as_secs_f32();
+
+        let mut new_loc = Vec3::zero();
+
         keydata.iter().for_each(|(keycode, state)| {
             if *state == ElementState::Pressed {
                 match *keycode {
                     VirtualKeyCode::W => {
-                        self.eye +=
-                            self.right.cross(Vec3::unit_z()).normalize() * self.movement_speed;
+                        new_loc += self.right.cross(Vec3::unit_z());
                     }
                     VirtualKeyCode::S => {
-                        self.eye -=
-                            self.right.cross(Vec3::unit_z()).normalize() * self.movement_speed;
+                        new_loc -= self.right.cross(Vec3::unit_z());
                     }
                     VirtualKeyCode::A => {
-                        self.eye += self.right * self.movement_speed;
+                        new_loc += self.right;
                     }
                     VirtualKeyCode::D => {
-                        self.eye -= self.right * self.movement_speed;
+                        new_loc -= self.right;
                     }
                     VirtualKeyCode::Space => {
-                        self.eye += g_types::vec3(0.0, 0.0, 1.0) * self.movement_speed;
+                        new_loc += g_types::vec3(0.0, 0.0, 1.0);
                     }
                     VirtualKeyCode::LShift => {
-                        self.eye -= g_types::vec3(0.0, 0.0, 1.0) * self.movement_speed;
+                        new_loc -= g_types::vec3(0.0, 0.0, 1.0);
                     }
                     _ => {}
                 }
             }
-        })
+        });
+
+        if new_loc.is_zero() {
+            return;
+        }
+
+        self.eye += new_loc.normalize() * dist_to_travel;
+        println!("{:?} {:?}", new_loc, self.eye);
     }
 
     pub fn update_mouse_motion(&mut self, delta: (f64, f64)) {

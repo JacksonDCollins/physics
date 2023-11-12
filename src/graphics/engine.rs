@@ -225,8 +225,8 @@ impl RenderEngine {
 
         self.presenter.images_in_flight[image_index] = self.presenter.in_flight_fences[frame];
 
-        self.update_uniform_buffer(image_index, camera, model_manager)?;
-        self.update_command_buffer(logical_device, image_index, scene, model_manager)?;
+        // self.update_uniform_buffer(image_index, camera, model_manager)?;
+        self.update_command_buffer(logical_device, image_index, scene, model_manager, camera)?;
 
         let wait_semaphores = &[self.presenter.image_available_semaphores[frame]];
         let wait_stages = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -277,39 +277,39 @@ impl RenderEngine {
         Ok(())
     }
 
-    pub unsafe fn update_uniform_buffer(
-        &mut self,
-        image_index: usize,
-        camera: &crate::controller::camera::Camera,
-        model_manager: &mut g_objects::ModelManager,
-    ) -> Result<()> {
-        let view = camera.get_view_matrix();
+    // pub unsafe fn update_uniform_buffer(
+    //     &mut self,
+    //     image_index: usize,
+    //     camera: &crate::controller::camera::Camera,
+    //     model_manager: &mut g_objects::ModelManager,
+    // ) -> Result<()> {
+    //     let view = camera.get_view_matrix();
 
-        #[rustfmt::skip]
-        let correction = g_types::Mat4::new(
-            1.0,  0.0,       0.0, 0.0,
-            // We're also flipping the Y-axis with this line's `-1.0`.
-            0.0, -1.0,       0.0, 0.0,
-            0.0,  0.0, 1.0 / 2.0, 0.0,
-            0.0,  0.0, 1.0 / 2.0, 1.0,
-        );
+    //     #[rustfmt::skip]
+    //     let correction = g_types::Mat4::new(
+    //         1.0,  0.0,       0.0, 0.0,
+    //         // We're also flipping the Y-axis with this line's `-1.0`.
+    //         0.0, -1.0,       0.0, 0.0,
+    //         0.0,  0.0, 1.0 / 2.0, 0.0,
+    //         0.0,  0.0, 1.0 / 2.0, 1.0,
+    //     );
 
-        let proj = correction
-            * cgmath::perspective(
-                g_types::Deg(45.0),
-                self.swapchain.extent.width as f32 / self.swapchain.extent.height as f32,
-                0.1,
-                100.0,
-            );
+    //     let proj = correction
+    //         * cgmath::perspective(
+    //             g_types::Deg(45.0),
+    //             self.swapchain.extent.width as f32 / self.swapchain.extent.height as f32,
+    //             0.1,
+    //             100.0,
+    //         );
 
-        let ubo = g_types::UniformBufferObject { view, proj };
+    //     let ubo = g_types::UniformBufferObject { view, proj };
 
-        model_manager
-            .buffer_allocator
-            .update_uniform_buffer(ubo, image_index)?;
+    //     model_manager
+    //         .buffer_allocator
+    //         .update_uniform_buffer(ubo, image_index)?;
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
     unsafe fn update_command_buffer(
         &mut self,
@@ -317,6 +317,7 @@ impl RenderEngine {
         image_index: usize,
         scene: &g_objects::Scene,
         model_manager: &g_objects::ModelManager,
+        camera: &crate::controller::camera::Camera,
     ) -> Result<()> {
         let command_pool = self.presenter.command_pool_sets[image_index].graphics;
         logical_device.reset_command_pool(command_pool, vk::CommandPoolResetFlags::empty())?;
@@ -353,9 +354,35 @@ impl RenderEngine {
             .render_area(render_area)
             .clear_values(clear_values);
 
+        let view = camera.get_view_matrix();
+
+        #[rustfmt::skip]
+            let correction = g_types::Mat4::new(
+                1.0,  0.0,       0.0, 0.0,
+                // We're also flipping the Y-axis with this line's `-1.0`.
+                0.0, -1.0,       0.0, 0.0,
+                0.0,  0.0, 1.0 / 2.0, 0.0,
+                0.0,  0.0, 1.0 / 2.0, 1.0,
+            );
+
+        let proj = correction
+            * cgmath::perspective(
+                g_types::Deg(45.0),
+                self.swapchain.extent.width as f32 / self.swapchain.extent.height as f32,
+                0.1,
+                100.0,
+            );
+
         logical_device.cmd_begin_render_pass(command_buffer, &info, vk::SubpassContents::INLINE);
 
-        scene.draw_instanced_models(image_index, model_manager, logical_device, command_buffer)?;
+        scene.draw_instanced_models(
+            image_index,
+            model_manager,
+            logical_device,
+            command_buffer,
+            &view,
+            &proj,
+        )?;
 
         // scene.draw_instanced_models(image_index, model_manager, logical_device, command_buffer)?;
 

@@ -28,6 +28,8 @@ pub struct App {
     frame: usize,
     pub resized: bool,
     scene: graphics::objects::Scene,
+    dt: std::time::Duration,
+    last_tick: std::time::Instant,
 }
 
 impl App {
@@ -93,6 +95,8 @@ impl App {
             frame: 0,
             resized: false,
             scene,
+            dt: std::time::Duration::from_secs(0),
+            last_tick: std::time::Instant::now(),
         })
     }
 
@@ -114,11 +118,19 @@ impl App {
         Ok(())
     }
 
-    pub fn tick(&mut self) {
-        self.camera.update(&self.input_engine.keydata);
+    pub fn tick(&mut self, now: std::time::Instant) {
         self.camera
             .update_mouse_motion(self.input_engine.recent_delta);
+
         self.input_engine.clear_old_input();
+
+        self.dt = now - self.last_tick;
+        if self.dt < *crate::ALLOWED_DT {
+            return;
+        }
+        self.last_tick = now;
+
+        self.camera.update(&self.input_engine.keydata, self.dt);
     }
 
     pub fn window_input(&mut self, event: &WindowEvent) {
@@ -149,5 +161,4 @@ impl App {
     }
 }
 
-// put view proj into push constants
-//refmorat vertex attrbviute bindinghs
+// refactor

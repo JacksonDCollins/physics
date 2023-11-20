@@ -109,7 +109,9 @@ pub unsafe fn create_instance(
     let mut debug_info = vk::DebugUtilsMessengerCreateInfoEXT::builder()
         .message_severity(
             vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
-                | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
+                | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR
+                | vk::DebugUtilsMessageSeverityFlagsEXT::INFO
+                | vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE,
         )
         .message_type(
             vk::DebugUtilsMessageTypeFlagsEXT::GENERAL
@@ -124,7 +126,7 @@ pub unsafe fn create_instance(
     }
 
     let instance = entry.create_instance(&instance_info, None)?;
-    let debug_utils_loader = DebugUtils::new(&entry, &instance);
+    let debug_utils_loader = DebugUtils::new(entry, &instance);
 
     let messenger = if VALIDATION_ENABLED {
         Some(debug_utils_loader.create_debug_utils_messenger(&debug_info, None)?)
@@ -234,7 +236,7 @@ unsafe fn check_physical_device(
     let indices = QueueFamilyIndices::get(instance, surface, surface_loader, physical_device)?;
     check_physical_device_extensions(instance, physical_device)?;
 
-    let support = SwapchainSupport::get(instance, surface_loader, surface, physical_device)?;
+    let support = SwapchainSupport::get(surface_loader, surface, physical_device)?;
     if support.formats.is_empty() || support.present_modes.is_empty() {
         return Err(anyhow!(SuitabilityError("Insufficient swapchain support.")));
     }
@@ -346,7 +348,6 @@ pub struct SwapchainSupport {
 
 impl SwapchainSupport {
     pub unsafe fn get(
-        instance: &ash::Instance,
         surface_loader: &Surface,
         surface: vk::SurfaceKHR,
         physical_device: vk::PhysicalDevice,
@@ -392,11 +393,11 @@ pub unsafe fn create_logical_device(
         })
         .collect::<Vec<_>>();
 
-    let layers = if VALIDATION_ENABLED {
-        vec![VALIDATION_LAYER.as_ptr()]
-    } else {
-        vec![]
-    };
+    // let layers = if VALIDATION_ENABLED {
+    //     vec![VALIDATION_LAYER.as_ptr()]
+    // } else {
+    //     vec![]
+    // };
 
     let mut extensions = DEVICE_EXTENSIONS
         .iter()
@@ -549,32 +550,6 @@ pub unsafe fn create_swapchain_image_views(
             )
         })
         .collect::<Result<Vec<_>, _>>()
-}
-
-pub unsafe fn create_pipeline_layout(
-    logical_device: &ash::Device,
-    descriptor_set_layout: vk::DescriptorSetLayout,
-) -> Result<vk::PipelineLayout> {
-    let vert_push_constant_range = vk::PushConstantRange::builder()
-        .stage_flags(vk::ShaderStageFlags::VERTEX)
-        .offset(0)
-        .size(128 /*2 *  16 × 4 byte floats */)
-        .build();
-
-    // let frag_push_constant_range = vk::PushConstantRange::builder()
-    //     .stage_flags(vk::ShaderStageFlags::FRAGMENT)
-    //     .offset(64)
-    //     .size(16 /* 2 x 4 byte ints */)
-    //     .build();
-
-    let set_layouts = &[descriptor_set_layout];
-    let push_constant_ranges = &[vert_push_constant_range];
-    let layout_info = vk::PipelineLayoutCreateInfo::builder()
-        .set_layouts(set_layouts)
-        .push_constant_ranges(push_constant_ranges);
-    logical_device
-        .create_pipeline_layout(&layout_info, None)
-        .map_err(|e| anyhow!("{}", e))
 }
 
 pub unsafe fn create_shader_module(
@@ -768,15 +743,12 @@ pub unsafe fn create_command_buffers(
         .collect::<Result<Vec<_>>>()
 }
 
+type SemVec = Vec<vk::Semaphore>;
+type FenceVec = Vec<vk::Fence>;
 pub unsafe fn create_sync_objects(
     logical_device: &ash::Device,
     swapchain_images_count: usize,
-) -> Result<(
-    Vec<vk::Semaphore>,
-    Vec<vk::Semaphore>,
-    Vec<vk::Fence>,
-    Vec<vk::Fence>,
-)> {
+) -> Result<(SemVec, SemVec, FenceVec, FenceVec)> {
     let semaphore_info = vk::SemaphoreCreateInfo::builder();
 
     let image_available_semaphores = (0..MAX_FRAMES_IN_FLIGHT)
@@ -894,7 +866,9 @@ pub unsafe fn create_buffer_and_memory(
             requirements,
         )?);
 
-    let buffer_memory = device.allocate_memory(&memory_info, None)?;
+    let buffer_memory = device
+        .allocate_memory(&memory_info, None)
+        .map_err(|e| anyhow!("{:?}", e))?;
 
     device.bind_buffer_memory(buffer, buffer_memory, 0)?;
 

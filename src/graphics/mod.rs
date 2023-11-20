@@ -1,3 +1,4 @@
+pub mod allocators;
 pub mod engine;
 pub mod objects;
 pub mod types;

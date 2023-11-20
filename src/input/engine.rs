@@ -16,22 +16,20 @@ impl InputEngine {
     }
 
     pub fn update(&mut self, event: &WindowEvent) {
-        match event {
-            WindowEvent::KeyboardInput {
-                input:
-                    KeyboardInput {
-                        state,
-                        virtual_keycode: Some(keycode),
-                        ..
-                    },
-                ..
-            } => {
-                self.keydata
-                    .entry(*keycode)
-                    .and_modify(|e| *e = *state)
-                    .or_insert(*state);
-            }
-            _ => {}
+        if let WindowEvent::KeyboardInput {
+            input:
+                KeyboardInput {
+                    state,
+                    virtual_keycode: Some(keycode),
+                    ..
+                },
+            ..
+        } = event
+        {
+            self.keydata
+                .entry(*keycode)
+                .and_modify(|e| *e = *state)
+                .or_insert(*state);
         }
     }
 

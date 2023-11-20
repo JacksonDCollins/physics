@@ -1,12 +1,14 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::collections::HashSet;
+// use std::collections::HashSet;
 use std::ffi::CStr;
 use std::fs;
 use std::fs::File;
-use std::hash::Hash;
-use std::io::Cursor;
+// use std::hash::Hash;
+// use std::io::Cursor;
 use std::mem::size_of;
-use std::os::raw::c_void;
+use std::sync::Arc;
+// use std::os::raw::c_void;
 
 use crate::graphics::types as g_types;
 use crate::graphics::utils as g_utils;
@@ -15,17 +17,23 @@ use anyhow::{anyhow, Result};
 use ash::util::read_spv;
 use cgmath::Euler;
 use cgmath::Quaternion;
+use cgmath::Rotation3;
 use cgmath::Zero;
-use rand::distributions::uniform;
+// use rand::distributions::uniform;
 use rand::Rng;
 
 use ash::vk;
 
 use winit::window::Window;
 
+use super::allocators::BufferMemoryAllocator;
+use super::allocators::TextureMemoryAllocator;
 use super::types::AttributeDescriptions;
 use super::types::BindingDescription;
+
+use super::types::render_info;
 use super::types::Vertex;
+// use super::types::Vertex;
 use super::utils::IsNull;
 use super::utils::SHADER_FILES;
 
@@ -252,7 +260,7 @@ impl Presenter {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct InstanceBuffer {
     pub buffer: vk::Buffer,
     pub size: u64,
@@ -263,11 +271,20 @@ pub struct InstanceBuffer {
 }
 
 impl InstanceBuffer {
-    pub unsafe fn create(pos_and_rot: &[(g_types::Vec3, cgmath::Quaternion<f32>)]) -> Result<Self> {
+    pub unsafe fn create(
+        pos_and_rot: &[(g_types::Vec3, cgmath::Quaternion<f32>)],
+        render_info: &g_types::RenderInfo,
+    ) -> Result<Self> {
         let model_matrixes = pos_and_rot
             .iter()
             .map(|(position, rotation)| {
-                g_types::Mat4::from_translation(*position) * g_types::Mat4::from(*rotation)
+                g_types::Mat4::from_translation(*position)
+                    * g_types::Mat4::from(*rotation)
+                    * g_types::Mat4::from_nonuniform_scale(
+                        render_info.model_info.scale.x,
+                        render_info.model_info.scale.y,
+                        render_info.model_info.scale.z,
+                    )
             })
             .collect::<Vec<_>>();
 
@@ -317,12 +334,12 @@ impl InstanceBuffer {
 
 #[derive(Debug)]
 pub struct VertexBuffer {
-    buffer: vk::Buffer,
-    vertices: Vec<g_types::Vertex>,
+    pub buffer: vk::Buffer,
+    pub vertices: Vec<g_types::Vertex>,
     size: u64,
-    offset: Option<u64>,
+    pub offset: Option<u64>,
     changed: bool,
-    reqs: Option<vk::MemoryRequirements>,
+    pub reqs: Option<vk::MemoryRequirements>,
 }
 
 impl VertexBuffer {
@@ -368,10 +385,10 @@ impl VertexBuffer {
 
 #[derive(Debug)]
 pub struct UniformBuffer {
-    buffer: vk::Buffer,
-    ubo: g_types::UniformBufferObject,
-    size: u64,
-    offset: Option<u64>,
+    pub buffer: vk::Buffer,
+    pub ubo: g_types::UniformBufferObject,
+    pub size: u64,
+    pub offset: Option<u64>,
     changed: bool,
 }
 
@@ -423,12 +440,12 @@ impl UniformBuffer {
 
 #[derive(Debug)]
 pub struct IndexBuffer {
-    buffer: vk::Buffer,
-    indices: Vec<u32>,
+    pub buffer: vk::Buffer,
+    pub indices: Vec<u32>,
     size: u64,
-    offset: Option<u64>,
+    pub offset: Option<u64>,
     changed: bool,
-    reqs: Option<vk::MemoryRequirements>,
+    pub reqs: Option<vk::MemoryRequirements>,
 }
 
 impl IndexBuffer {
@@ -476,489 +493,58 @@ impl IndexBuffer {
     }
 }
 
-#[derive(Debug)]
-pub struct BufferMemoryAllocator {
-    pub vertex_index_memory: vk::DeviceMemory,
-    pub vertex_index_buffer: vk::Buffer,
-    pub uniform_memory: vk::DeviceMemory,
-    pub uniform_buffer: vk::Buffer,
-    pub uniform_memory_ptr: *mut c_void,
-    pub staging_memory: vk::DeviceMemory,
-    pub staging_buffer: vk::Buffer,
-    pub stage_memory_ptr: *mut c_void,
-
-    pub uniform_buffers_to_allocate: Vec<UniformBuffer>,
+pub struct ComputeBuffer<T> {
+    pub buffer: vk::Buffer,
+    pub data: Vec<T>,
+    pub size: u64,
+    pub offset: Option<u64>,
     pub changed: bool,
+    pub reqs: Option<vk::MemoryRequirements>,
 }
 
-impl BufferMemoryAllocator {
-    pub unsafe fn create() -> Result<Self> {
-        Ok(Self {
-            vertex_index_memory: vk::DeviceMemory::null(),
-            vertex_index_buffer: vk::Buffer::null(),
-            uniform_memory: vk::DeviceMemory::null(),
-            uniform_buffer: vk::Buffer::null(),
-            uniform_memory_ptr: std::ptr::null_mut(),
-            staging_buffer: vk::Buffer::null(),
-            staging_memory: vk::DeviceMemory::null(),
-            stage_memory_ptr: std::ptr::null_mut(),
+impl<T: Clone> ComputeBuffer<T> {
+    pub unsafe fn create(data: &[T]) -> Result<Self> {
+        let size = std::mem::size_of_val(data) as u64;
 
-            uniform_buffers_to_allocate: Vec::new(),
-            changed: true,
+        Ok(Self {
+            data: data.to_vec(),
+            buffer: vk::Buffer::null(),
+            size,
+            offset: None,
+            changed: false,
+            reqs: None,
         })
     }
 
-    pub unsafe fn add_uniform_buffer(&mut self, buffer: UniformBuffer) {
-        self.uniform_buffers_to_allocate.push(buffer);
+    pub fn get_required_size(&self) -> u64 {
+        g_utils::align_up(self.reqs.unwrap().size, self.reqs.unwrap().alignment)
     }
 
-    unsafe fn create_and_map_staging_buffer_and_memory(
-        instance: &ash::Instance,
-        logical_device: &ash::Device,
-        physical_device: vk::PhysicalDevice,
-        size: u64,
-    ) -> Result<(vk::Buffer, vk::DeviceMemory, *mut c_void)> {
-        let (staging_buffer, staging_buffer_memory, _) = g_utils::create_buffer_and_memory(
-            instance,
-            logical_device,
-            physical_device,
-            size,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
-        )?;
-
-        let memory = logical_device.map_memory(
-            staging_buffer_memory,
-            0,
-            size,
-            vk::MemoryMapFlags::empty(),
-        )?;
-
-        Ok((staging_buffer, staging_buffer_memory, memory))
+    pub fn get_buffer(&self) -> vk::Buffer {
+        self.buffer
     }
 
-    pub unsafe fn update_uniform_buffer(
-        &mut self,
-        ubo: g_types::UniformBufferObject,
-        buffer_index: usize,
-    ) -> Result<()> {
-        let buffer = &mut self.uniform_buffers_to_allocate[buffer_index];
-        buffer.update(ubo);
-
-        g_utils::memcpy(
-            &[buffer.ubo],
-            self.uniform_memory_ptr
-                .add(buffer.offset.unwrap() as usize)
-                .cast(),
-            1,
-        );
-
-        Ok(())
+    pub fn get_size(&self) -> u64 {
+        self.size
     }
 
-    pub unsafe fn create_memories(
-        &mut self,
-        instance: &ash::Instance,
-        logical_device: &ash::Device,
-        physical_device: vk::PhysicalDevice,
-        size: u64,
-    ) -> Result<()> {
-        if self.stage_memory_ptr.is_null() {
-            let (staging_buffer, staging_buffer_memory, memory_ptr) =
-                Self::create_and_map_staging_buffer_and_memory(
-                    instance,
-                    logical_device,
-                    physical_device,
-                    size,
-                )?;
-            self.staging_buffer = staging_buffer;
-            self.staging_memory = staging_buffer_memory;
-            self.stage_memory_ptr = memory_ptr;
-        }
+    pub unsafe fn destroy(&self, logical_device: &ash::Device) {
+        logical_device.destroy_buffer(self.buffer, None);
+    }
 
-        if self.uniform_memory_ptr.is_null() {
-            let size = (std::mem::size_of::<g_types::UniformBufferObject>()
-                * self.uniform_buffers_to_allocate.len()) as u64;
-            let (uniform_buffer, uniform_buffer_memory, _) = g_utils::create_buffer_and_memory(
-                instance,
+    pub unsafe fn create_buffer(&mut self, logical_device: &ash::Device) -> Result<()> {
+        if self.buffer.is_null() {
+            self.buffer = g_utils::create_buffer(
                 logical_device,
-                physical_device,
-                size,
-                vk::BufferUsageFlags::UNIFORM_BUFFER,
-                vk::MemoryPropertyFlags::DEVICE_LOCAL | vk::MemoryPropertyFlags::HOST_VISIBLE,
+                self.size,
+                vk::BufferUsageFlags::TRANSFER_DST
+                    | vk::BufferUsageFlags::VERTEX_BUFFER
+                    | vk::BufferUsageFlags::STORAGE_BUFFER,
             )?;
 
-            let memory_ptr = logical_device.map_memory(
-                uniform_buffer_memory,
-                0,
-                size,
-                vk::MemoryMapFlags::empty(),
-            )?;
-            self.uniform_buffer = uniform_buffer;
-            self.uniform_memory = uniform_buffer_memory;
-            self.uniform_memory_ptr = memory_ptr;
-        }
-
-        if self.vertex_index_memory.is_null() {
-            (self.vertex_index_buffer, self.vertex_index_memory, _) =
-                g_utils::create_buffer_and_memory(
-                    instance,
-                    logical_device,
-                    physical_device,
-                    size,
-                    vk::BufferUsageFlags::TRANSFER_DST
-                        | vk::BufferUsageFlags::VERTEX_BUFFER
-                        | vk::BufferUsageFlags::INDEX_BUFFER,
-                    vk::MemoryPropertyFlags::DEVICE_LOCAL,
-                )?;
+            self.reqs = Some(logical_device.get_buffer_memory_requirements(self.buffer));
         }
         Ok(())
-    }
-
-    pub unsafe fn allocate_memory(
-        &mut self,
-        logical_device: &ash::Device,
-        queue_set: &g_utils::QueueSet,
-        command_pool_set: g_types::CommandPoolSet,
-        models: &mut [&mut Model],
-        size: u64,
-    ) -> Result<()> {
-        if !self.changed {
-            return Ok(());
-        }
-
-        self.changed = false;
-
-        models.iter_mut().for_each(|model| {
-            g_utils::memcpy(
-                model.vertex_buffer.vertices.as_ptr(),
-                self.stage_memory_ptr
-                    .add(model.vertex_buffer.offset.unwrap() as usize)
-                    .cast(),
-                model.vertex_buffer.vertices.len(),
-            );
-
-            g_utils::memcpy(
-                model.index_buffer.indices.as_ptr(),
-                self.stage_memory_ptr
-                    .add(model.index_buffer.offset.unwrap() as usize)
-                    .cast(),
-                model.index_buffer.indices.len(),
-            );
-
-            g_utils::memcpy(
-                model.instance_buffer.model_matrixes.as_ptr(),
-                self.stage_memory_ptr
-                    .add(model.instance_buffer.offset.unwrap() as usize)
-                    .cast(),
-                model.instance_buffer.model_matrixes.len(),
-            );
-        });
-
-        g_utils::copy_buffer(
-            logical_device,
-            queue_set.transfer,
-            command_pool_set.transfer,
-            self.staging_buffer,
-            self.vertex_index_buffer,
-            size,
-            0,
-            0,
-        )?;
-
-        for buffer in models
-            .iter()
-            .map(|model| &model.vertex_buffer)
-            .filter(|buffer| buffer.offset.is_some())
-        {
-            logical_device.bind_buffer_memory(
-                buffer.buffer,
-                self.vertex_index_memory,
-                buffer.offset.unwrap(),
-            )?;
-        }
-
-        for buffer in models
-            .iter()
-            .map(|model| &model.index_buffer)
-            .filter(|buffer| buffer.offset.is_some())
-        {
-            logical_device.bind_buffer_memory(
-                buffer.buffer,
-                self.vertex_index_memory,
-                buffer.offset.unwrap(),
-            )?;
-        }
-
-        for buffer in models
-            .iter()
-            .map(|model| &model.instance_buffer)
-            .filter(|buffer| buffer.offset.is_some())
-        {
-            logical_device.bind_buffer_memory(
-                buffer.buffer,
-                self.vertex_index_memory,
-                buffer.offset.unwrap(),
-            )?;
-        }
-
-        let mut offset = 0;
-        for buffer in self.uniform_buffers_to_allocate.iter_mut() {
-            let alignment = logical_device
-                .get_buffer_memory_requirements(buffer.buffer)
-                .alignment;
-            offset = g_utils::align_up(offset, alignment);
-
-            logical_device.bind_buffer_memory(buffer.buffer, self.uniform_memory, offset)?;
-            buffer.offset = Some(offset);
-            offset += buffer.size;
-        }
-
-        Ok(())
-    }
-
-    pub unsafe fn destroy(&mut self, logical_device: &ash::Device) {
-        self.destroy_buffers(logical_device);
-
-        logical_device.destroy_buffer(self.vertex_index_buffer, None);
-        logical_device.free_memory(self.vertex_index_memory, None);
-
-        logical_device.unmap_memory(self.staging_memory);
-        self.stage_memory_ptr = std::ptr::null_mut();
-        logical_device.destroy_buffer(self.staging_buffer, None);
-        logical_device.free_memory(self.staging_memory, None);
-
-        logical_device.unmap_memory(self.uniform_memory);
-        self.uniform_memory_ptr = std::ptr::null_mut();
-        logical_device.destroy_buffer(self.uniform_buffer, None);
-        logical_device.free_memory(self.uniform_memory, None);
-    }
-
-    pub unsafe fn destroy_buffers(&mut self, logical_device: &ash::Device) {
-        self.uniform_buffers_to_allocate
-            .iter_mut()
-            .filter(|buffer| !buffer.buffer.is_null())
-            .for_each(|buffer| buffer.destroy(logical_device));
-    }
-
-    pub unsafe fn create_buffers(
-        &mut self,
-        logical_device: &ash::Device,
-        models: &mut HashMap<String, Model>,
-    ) -> Result<()> {
-        for model in models.values_mut() {
-            model.vertex_buffer.create_buffer(logical_device)?;
-            model.index_buffer.create_buffer(logical_device)?;
-            model.instance_buffer.create_buffer(logical_device)?;
-        }
-
-        for buffer in self.uniform_buffers_to_allocate.iter_mut() {
-            buffer.create_buffer(logical_device)?;
-        }
-
-        Ok(())
-    }
-}
-
-pub struct TextureMemoryAllocator {
-    pub staging_buffer: vk::Buffer,
-    pub staging_memory: vk::DeviceMemory,
-    pub staging_memory_ptr: *mut c_void,
-    pub texture_memorys: HashMap<u32, vk::DeviceMemory>,
-    changed: bool,
-}
-
-impl TextureMemoryAllocator {
-    pub unsafe fn create() -> Result<Self> {
-        Ok(Self {
-            staging_buffer: vk::Buffer::null(),
-            staging_memory: vk::DeviceMemory::null(),
-            staging_memory_ptr: std::ptr::null_mut(),
-            texture_memorys: HashMap::new(),
-            changed: true,
-        })
-    }
-
-    unsafe fn create_and_map_staging_buffer_and_memory(
-        instance: &ash::Instance,
-        logical_device: &ash::Device,
-        physical_device: vk::PhysicalDevice,
-        size: u64,
-    ) -> Result<(vk::Buffer, vk::DeviceMemory, *mut c_void)> {
-        let (staging_buffer, staging_memory, _) = g_utils::create_buffer_and_memory(
-            instance,
-            logical_device,
-            physical_device,
-            size,
-            vk::BufferUsageFlags::TRANSFER_SRC,
-            vk::MemoryPropertyFlags::HOST_COHERENT | vk::MemoryPropertyFlags::HOST_VISIBLE,
-        )?;
-
-        let memory =
-            logical_device.map_memory(staging_memory, 0, size, vk::MemoryMapFlags::empty())?;
-
-        Ok((staging_buffer, staging_memory, memory))
-    }
-
-    pub unsafe fn create_textures(
-        &mut self,
-        instance: &ash::Instance,
-        logical_device: &ash::Device,
-        physical_device: vk::PhysicalDevice,
-        models: &mut HashMap<&String, &mut Model>,
-    ) -> Result<()> {
-        for model in models.values_mut() {
-            model
-                .texture
-                .create_image_objects(instance, logical_device, physical_device)?;
-        }
-
-        Ok(())
-    }
-
-    pub unsafe fn allocate_memory(
-        &mut self,
-        instance: &ash::Instance,
-        logical_device: &ash::Device,
-        physical_device: vk::PhysicalDevice,
-        queue_set: &g_utils::QueueSet,
-        command_pool_set: &g_types::CommandPoolSet,
-        models: &mut HashMap<&String, &mut Model>,
-    ) -> Result<()> {
-        if !self.changed {
-            return Ok(());
-        }
-
-        self.changed = false;
-
-        let memory_type_indexes = models
-            .values()
-            .map(|model| model.texture.memory_type_index)
-            .collect::<HashSet<_>>();
-
-        let total_size = models.values().fold(0, |acc, model| {
-            acc + g_utils::align_up(
-                model.texture.reqs.unwrap().size,
-                model.texture.reqs.unwrap().alignment,
-            )
-        });
-
-        if self.staging_memory_ptr.is_null() {
-            let (staging_buffer, staging_buffer_memory, memory_ptr) =
-                Self::create_and_map_staging_buffer_and_memory(
-                    instance,
-                    logical_device,
-                    physical_device,
-                    total_size,
-                )?;
-            self.staging_buffer = staging_buffer;
-            self.staging_memory = staging_buffer_memory;
-            self.staging_memory_ptr = memory_ptr;
-        }
-
-        for memory_type_index in memory_type_indexes {
-            let required_size = models
-                .values()
-                .filter(|model| model.texture.memory_type_index == memory_type_index)
-                .fold(0, |acc, model| {
-                    acc + g_utils::align_up(
-                        model.texture.reqs.unwrap().size,
-                        model.texture.reqs.unwrap().alignment,
-                    )
-                });
-
-            let mut offset = 0;
-            models
-                .values_mut()
-                .filter(|model| model.texture.memory_type_index == memory_type_index)
-                .for_each(|model| {
-                    offset = g_utils::align_up(offset, model.texture.reqs.unwrap().alignment);
-                    let dst = self.staging_memory_ptr.add(offset as usize).cast();
-                    g_utils::memcpy(
-                        model.texture.pixels.as_ptr(),
-                        dst,
-                        model.texture.pixels.len(),
-                    );
-                    model.texture.offset = Some(offset);
-                    offset += model.texture.reqs.unwrap().size;
-                });
-
-            let texture_memory = g_utils::create_memory_with_mem_type_index(
-                logical_device,
-                required_size,
-                memory_type_index,
-            )?;
-
-            self.texture_memorys
-                .insert(memory_type_index, texture_memory);
-
-            for model in models.values_mut().filter(|model| {
-                model.texture.memory_type_index == memory_type_index
-                    && model.texture.offset.is_some()
-            }) {
-                logical_device.bind_image_memory(
-                    model.texture.image,
-                    *self.texture_memorys.get(&memory_type_index).unwrap(),
-                    model.texture.offset.unwrap(),
-                )?;
-
-                g_utils::transition_image_layout(
-                    logical_device,
-                    command_pool_set.graphics,
-                    queue_set.graphics,
-                    model.texture.image,
-                    model.texture.mip_levels,
-                    model.texture.format,
-                    vk::ImageLayout::UNDEFINED,
-                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                    vk::QUEUE_FAMILY_IGNORED,
-                    vk::QUEUE_FAMILY_IGNORED,
-                )?;
-
-                g_utils::copy_buffer_to_image(
-                    logical_device,
-                    command_pool_set.graphics,
-                    queue_set.graphics,
-                    self.staging_buffer,
-                    model.texture.image,
-                    model.texture.width,
-                    model.texture.height,
-                    model.texture.offset.unwrap(),
-                )?;
-
-                g_utils::generate_mipmaps(
-                    instance,
-                    logical_device,
-                    physical_device,
-                    command_pool_set.graphics,
-                    queue_set.graphics,
-                    model.texture.image,
-                    model.texture.format,
-                    model.texture.width,
-                    model.texture.height,
-                    model.texture.mip_levels,
-                )?;
-
-                model.texture.image_view = g_utils::create_texture_image_view(
-                    logical_device,
-                    model.texture.image,
-                    model.texture.mip_levels,
-                    model.texture.format,
-                )?;
-            }
-        }
-        Ok(())
-    }
-
-    pub unsafe fn destroy(&mut self, logical_device: &ash::Device) {
-        for (_, texture_memory) in self.texture_memorys.iter() {
-            logical_device.free_memory(*texture_memory, None);
-        }
-
-        logical_device.unmap_memory(self.staging_memory);
-        logical_device.destroy_buffer(self.staging_buffer, None);
-        self.staging_memory_ptr = std::ptr::null_mut();
-        logical_device.free_memory(self.staging_memory, None);
     }
 }
 
@@ -976,8 +562,8 @@ pub struct Texture {
     pub width: u32,
     pub height: u32,
     pub memory_type_index: u32,
-    changed: bool,
-    format: vk::Format,
+    // changed: bool,
+    pub format: vk::Format,
 }
 
 impl Texture {
@@ -1007,7 +593,7 @@ impl Texture {
             width,
             height,
             memory_type_index: 0,
-            changed: false,
+            // changed: false,
             format: vk::Format::R8G8B8A8_SRGB,
         })
     }
@@ -1062,6 +648,482 @@ impl Texture {
     }
 }
 
+pub struct Terrain {
+    pub compute_buffer: ComputeBuffer<Vertex>,
+    pub index_buffer: IndexBuffer,
+    pub instance_buffer: InstanceBuffer,
+    pub descriptor_set_layout: vk::DescriptorSetLayout,
+    pub pipeline_layout: vk::PipelineLayout,
+    pub pipeline: vk::Pipeline,
+    pub descriptor_pool: vk::DescriptorPool,
+    pub descriptor_sets: Vec<vk::DescriptorSet>,
+    pub render_info: g_types::RenderInfo,
+    pub buffer_memory_allocator: BufferMemoryAllocator,
+}
+
+impl Terrain {
+    pub unsafe fn create(logical_device: &ash::Device) -> Result<Self> {
+        // let (vertices, indices) = g_utils::load_model("resources/landscape/landscape.obj")?;
+        // let vertex_buffer = VertexBuffer::create(&vertices)?;
+        // let index_buffer = IndexBuffer::create(&indices)?;
+
+        let mut render_info = g_types::DEFAULT_RENDER_INFO;
+
+        render_info.polygon_info.front_face = vk::FrontFace::CLOCKWISE;
+
+        let mut rand = rand::thread_rng();
+
+        let height_list = (0..10)
+            .map(|_| (0..5).map(|_| rand.gen_range(0.0..=1.)).collect::<Vec<_>>())
+            .collect::<Vec<_>>();
+
+        let vertex_list = (0..10)
+            .flat_map(|i| {
+                (0..5).map(move |j| (j, i)).flat_map(|(j, i)| {
+                    vec![
+                        Vertex::new(
+                            g_types::vec3(
+                                i as f32,
+                                j as f32,
+                                *height_list
+                                    .get(i.max(1) - 1)
+                                    .and_then(|v| v.get(j))
+                                    .unwrap_or(&0.0),
+                            ),
+                            g_types::Vec3::unit_z(),
+                            g_types::Vec2::zero(),
+                        ),
+                        Vertex::new(
+                            g_types::vec3(
+                                i as f32,
+                                j as f32 + 1.,
+                                *height_list
+                                    .get(i)
+                                    .and_then(|v| v.get(j.max(1) - 1))
+                                    .unwrap_or(&0.0),
+                            ),
+                            g_types::Vec3::unit_z(),
+                            g_types::Vec2::zero(),
+                        ),
+                        Vertex::new(
+                            g_types::vec3(
+                                i as f32 + 1.,
+                                j as f32,
+                                *height_list.get(i).and_then(|v| v.get(j)).unwrap_or(&0.0),
+                            ),
+                            g_types::Vec3::unit_z(),
+                            g_types::Vec2::zero(),
+                        ),
+                        Vertex::new(
+                            g_types::vec3(
+                                i as f32,
+                                j as f32 + 1.,
+                                *height_list
+                                    .get(i)
+                                    .and_then(|v| v.get(j.max(1) - 1))
+                                    .unwrap_or(&0.0),
+                            ),
+                            g_types::Vec3::unit_z(),
+                            g_types::Vec2::zero(),
+                        ),
+                        Vertex::new(
+                            g_types::vec3(
+                                i as f32 + 1.,
+                                j as f32 + 1.0,
+                                *height_list
+                                    .get(i.max(1) - 1)
+                                    .and_then(|v| v.get(j.max(1) - 1))
+                                    .unwrap_or(&0.0),
+                            ),
+                            g_types::Vec3::unit_z(),
+                            g_types::Vec2::zero(),
+                        ),
+                        Vertex::new(
+                            g_types::vec3(
+                                i as f32 + 1.,
+                                j as f32,
+                                *height_list.get(i).and_then(|v| v.get(j)).unwrap_or(&0.0),
+                            ),
+                            g_types::Vec3::unit_z(),
+                            g_types::Vec2::zero(),
+                        ),
+                    ]
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+
+        for i in 0..vertex_list.len() {
+            vertices.push(vertex_list[i]);
+            indices.push(i as u32);
+        }
+
+        let compute_buffer = ComputeBuffer::create(&vertices)?;
+
+        let index_buffer = IndexBuffer::create(&indices)?;
+
+        let instance_buffer = InstanceBuffer::create(
+            &[(
+                g_types::vec3(0., 0., 0.),
+                cgmath::Quaternion::from_axis_angle(g_types::Vec3::unit_y(), cgmath::Deg(0.)),
+            )],
+            &render_info,
+        )?;
+
+        let descriptor_set_layout = Self::create_descriptor_set_layout(logical_device)?;
+
+        let pipeline_layout = Self::create_pipeline_layout(logical_device, descriptor_set_layout)?;
+
+        let pipeline = vk::Pipeline::null();
+
+        let descriptor_pool = vk::DescriptorPool::null();
+        let descriptor_sets = Vec::new();
+
+        let buffer_memory_allocator = BufferMemoryAllocator::create()?;
+
+        Ok(Self {
+            compute_buffer,
+            index_buffer,
+            instance_buffer,
+            descriptor_set_layout,
+            pipeline_layout,
+            pipeline,
+            descriptor_pool,
+            descriptor_sets,
+            render_info,
+            buffer_memory_allocator,
+        })
+    }
+
+    pub unsafe fn create_buffers(&mut self, logical_device: &ash::Device) -> Result<()> {
+        self.compute_buffer.create_buffer(logical_device)?;
+        self.index_buffer.create_buffer(logical_device)?;
+        self.instance_buffer.create_buffer(logical_device)?;
+
+        Ok(())
+    }
+
+    pub unsafe fn push_constants(
+        &self,
+        logical_device: &ash::Device,
+        command_buffer: vk::CommandBuffer,
+        view: &g_types::Mat4,
+        proj: &g_types::Mat4,
+    ) {
+        let view_bytes = std::slice::from_raw_parts(
+            view as *const g_types::Mat4 as *const u8,
+            size_of::<g_types::Mat4>(),
+        );
+
+        let proj_bytes = std::slice::from_raw_parts(
+            proj as *const g_types::Mat4 as *const u8,
+            size_of::<g_types::Mat4>(),
+        );
+
+        logical_device.cmd_push_constants(
+            command_buffer,
+            self.pipeline_layout,
+            vk::ShaderStageFlags::VERTEX,
+            0,
+            &[view_bytes, proj_bytes].concat(),
+        );
+    }
+
+    pub unsafe fn draw(
+        &self,
+        logical_device: &ash::Device,
+        command_buffer: vk::CommandBuffer,
+        image_index: usize,
+        view: &g_types::Mat4,
+        proj: &g_types::Mat4,
+    ) {
+        logical_device.cmd_bind_pipeline(
+            command_buffer,
+            vk::PipelineBindPoint::GRAPHICS,
+            self.pipeline,
+        );
+
+        logical_device.cmd_bind_vertex_buffers(
+            command_buffer,
+            0,
+            &[
+                self.compute_buffer.get_buffer(),
+                self.instance_buffer.get_buffer(),
+            ],
+            &[0, 0],
+        );
+
+        logical_device.cmd_bind_index_buffer(
+            command_buffer,
+            self.index_buffer.get_buffer(),
+            0,
+            vk::IndexType::UINT32,
+        );
+
+        logical_device.cmd_bind_descriptor_sets(
+            command_buffer,
+            vk::PipelineBindPoint::GRAPHICS,
+            self.pipeline_layout,
+            0,
+            &[self.descriptor_sets[image_index]],
+            &[],
+        );
+
+        self.push_constants(logical_device, command_buffer, view, proj);
+
+        logical_device.cmd_draw_indexed(
+            command_buffer,
+            self.index_buffer.get_indice_count(),
+            1,
+            0,
+            0,
+            0,
+        );
+    }
+    pub unsafe fn create_descriptor_set_layout(
+        logical_device: &ash::Device,
+    ) -> Result<vk::DescriptorSetLayout> {
+        let bindings = &[];
+        let info = vk::DescriptorSetLayoutCreateInfo::builder().bindings(bindings);
+
+        logical_device
+            .create_descriptor_set_layout(&info, None)
+            .map_err(|e| anyhow!("{}", e))
+    }
+
+    pub unsafe fn create_descriptor_pool_and_sets(
+        &mut self,
+        logical_device: &ash::Device,
+        swapchain_images_count: usize,
+    ) -> Result<()> {
+        self.descriptor_pool =
+            Self::create_descriptor_pool(logical_device, swapchain_images_count as u32)?;
+
+        self.descriptor_sets = g_utils::create_descriptor_sets(
+            logical_device,
+            self.descriptor_set_layout,
+            self.descriptor_pool,
+            swapchain_images_count,
+        )?;
+
+        Ok(())
+    }
+
+    pub unsafe fn create_descriptor_pool(
+        logical_device: &ash::Device,
+        swapchain_images_count: u32,
+    ) -> Result<vk::DescriptorPool> {
+        let pool_sizes = &[];
+        let info = vk::DescriptorPoolCreateInfo::builder()
+            .pool_sizes(pool_sizes)
+            .max_sets(swapchain_images_count);
+
+        logical_device
+            .create_descriptor_pool(&info, None)
+            .map_err(|e| anyhow!("{}", e))
+    }
+    pub unsafe fn update_descriptor_sets(
+        &mut self,
+        logical_device: &ash::Device,
+        swapchain_images_count: usize,
+        // uniform_buffers: &[UniformBuffer],
+    ) -> Result<()> {
+        (0..swapchain_images_count).enumerate().for_each(|(i, _)| {
+            logical_device.update_descriptor_sets(&[], &[] as &[vk::CopyDescriptorSet]);
+        });
+
+        Ok(())
+    }
+
+    pub unsafe fn create_pipeline_layout(
+        logical_device: &ash::Device,
+        descriptor_set_layout: vk::DescriptorSetLayout,
+    ) -> Result<vk::PipelineLayout> {
+        let vert_push_constant_range = vk::PushConstantRange::builder()
+            .stage_flags(vk::ShaderStageFlags::VERTEX)
+            .offset(0)
+            .size(128 /*2 *  16 × 4 byte floats */)
+            .build();
+
+        // let frag_push_constant_range = vk::PushConstantRange::builder()
+        //     .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+        //     .offset(64)
+        //     .size(16 /* 2 x 4 byte ints */)
+        //     .build();
+
+        let set_layouts = &[descriptor_set_layout];
+        let push_constant_ranges = &[vert_push_constant_range];
+        let layout_info = vk::PipelineLayoutCreateInfo::builder()
+            .set_layouts(set_layouts)
+            .push_constant_ranges(push_constant_ranges);
+        logical_device
+            .create_pipeline_layout(&layout_info, None)
+            .map_err(|e| anyhow!("{}", e))
+    }
+
+    pub unsafe fn create_pipeline(
+        &mut self,
+        logical_device: &ash::Device,
+        msaa_samples: vk::SampleCountFlags,
+        render_pass: vk::RenderPass,
+        extent: vk::Extent2D,
+    ) -> Result<()> {
+        let vert_code = read_spv(&mut fs::File::open(
+            SHADER_FILES.get("terrain_vert").unwrap(),
+        )?)?;
+        let frag_code = read_spv(&mut fs::File::open(
+            SHADER_FILES.get("terrain_frag").unwrap(),
+        )?)?;
+        let compute_code = read_spv(&mut fs::File::open(
+            SHADER_FILES.get("terrain_compute").unwrap(),
+        )?)?;
+
+        let vert_shader_module = g_utils::create_shader_module(logical_device, &vert_code)?;
+        let frag_shader_module = g_utils::create_shader_module(logical_device, &frag_code)?;
+        let compute_shader_module = g_utils::create_shader_module(logical_device, &compute_code)?;
+
+        let vert_stage = vk::PipelineShaderStageCreateInfo::builder()
+            .stage(vk::ShaderStageFlags::VERTEX)
+            .module(vert_shader_module)
+            .name(CStr::from_bytes_with_nul_unchecked(b"main\0"))
+            .build();
+
+        let frag_stage = vk::PipelineShaderStageCreateInfo::builder()
+            .stage(vk::ShaderStageFlags::FRAGMENT)
+            .module(frag_shader_module)
+            .name(CStr::from_bytes_with_nul_unchecked(b"main\0"))
+            .build();
+
+        let compute_stage = vk::PipelineShaderStageCreateInfo::builder()
+            .stage(vk::ShaderStageFlags::COMPUTE)
+            .module(compute_shader_module)
+            .name(CStr::from_bytes_with_nul_unchecked(b"main\0"))
+            .build();
+
+        let binding_descriptions = &[
+            g_types::Vertex::binding_description(0, vk::VertexInputRate::VERTEX),
+            g_types::Mat4::binding_description(1, vk::VertexInputRate::INSTANCE),
+        ];
+        let attribute_descriptions = &[
+            g_types::Vertex::attribute_descriptions(0, 0),
+            g_types::Mat4::attribute_descriptions(1, 3),
+        ]
+        .concat();
+
+        let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::builder()
+            .vertex_binding_descriptions(binding_descriptions)
+            .vertex_attribute_descriptions(attribute_descriptions)
+            .build();
+
+        let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::builder()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            .primitive_restart_enable(false)
+            .build();
+
+        let viewport = vk::Viewport::builder()
+            .x(0.0)
+            .y(0.0)
+            .width(extent.width as f32)
+            .height(extent.height as f32)
+            .min_depth(0.0)
+            .max_depth(1.0)
+            .build();
+
+        let scissor = vk::Rect2D::builder()
+            .offset(vk::Offset2D { x: 0, y: 0 })
+            .extent(vk::Extent2D {
+                width: extent.width,
+                height: extent.height,
+            })
+            .build();
+
+        let viewports = &[viewport];
+        let scissors = &[scissor];
+        let viewport_state = vk::PipelineViewportStateCreateInfo::builder()
+            .viewports(viewports)
+            .scissors(scissors);
+
+        let rasterization_state = vk::PipelineRasterizationStateCreateInfo::builder()
+            .depth_clamp_enable(false)
+            .rasterizer_discard_enable(false)
+            .polygon_mode(vk::PolygonMode::FILL)
+            .line_width(1.0)
+            .cull_mode(self.render_info.polygon_info.cull_mode)
+            .front_face(self.render_info.polygon_info.front_face)
+            .depth_bias_enable(false);
+
+        let depth_stencil_state = vk::PipelineDepthStencilStateCreateInfo::builder()
+            .depth_test_enable(true)
+            .depth_write_enable(true)
+            .depth_compare_op(vk::CompareOp::LESS)
+            .depth_bounds_test_enable(false)
+            .min_depth_bounds(0.0)
+            .max_depth_bounds(1.0)
+            .stencil_test_enable(false)
+            .build();
+
+        let multisample_state = vk::PipelineMultisampleStateCreateInfo::builder()
+            .sample_shading_enable(false)
+            .rasterization_samples(msaa_samples)
+            .build();
+
+        let attachment = vk::PipelineColorBlendAttachmentState::builder()
+            .color_write_mask(vk::ColorComponentFlags::RGBA)
+            .blend_enable(true)
+            .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+            .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+            .color_blend_op(vk::BlendOp::ADD)
+            .src_alpha_blend_factor(vk::BlendFactor::ONE)
+            .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+            .alpha_blend_op(vk::BlendOp::ADD)
+            .build();
+
+        let attachments = &[attachment];
+        let color_blend_state = vk::PipelineColorBlendStateCreateInfo::builder()
+            .logic_op_enable(false)
+            .logic_op(vk::LogicOp::COPY)
+            .attachments(attachments)
+            .blend_constants([0.0, 0.0, 0.0, 0.0]);
+
+        let stages = &[vert_stage, frag_stage];
+        let info = vk::GraphicsPipelineCreateInfo::builder()
+            .stages(stages)
+            .vertex_input_state(&vertex_input_state)
+            .input_assembly_state(&input_assembly_state)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterization_state)
+            .multisample_state(&multisample_state)
+            .depth_stencil_state(&depth_stencil_state)
+            .color_blend_state(&color_blend_state)
+            .layout(self.pipeline_layout)
+            .render_pass(render_pass)
+            .subpass(0)
+            .build();
+
+        self.pipeline = logical_device
+            .create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)
+            .map_err(|e| anyhow!("{}", e.1))?[0];
+
+        logical_device.destroy_shader_module(vert_shader_module, None);
+        logical_device.destroy_shader_module(frag_shader_module, None);
+
+        Ok(())
+    }
+
+    pub unsafe fn destroy(&mut self, logical_device: &ash::Device) {
+        self.compute_buffer.destroy(logical_device);
+        self.index_buffer.destroy(logical_device);
+        self.instance_buffer.destroy(logical_device);
+        self.buffer_memory_allocator.destroy(logical_device);
+        logical_device.destroy_descriptor_pool(self.descriptor_pool, None);
+        logical_device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
+        logical_device.destroy_pipeline(self.pipeline, None);
+        logical_device.destroy_pipeline_layout(self.pipeline_layout, None);
+    }
+}
+
 #[derive(Debug)]
 pub struct Model {
     pub vertex_buffer: VertexBuffer,
@@ -1074,30 +1136,36 @@ pub struct Model {
     pub descriptor_sets: Vec<vk::DescriptorSet>,
     pub texture: Texture,
     instance_count: u32,
+    pub render_info: g_types::RenderInfo,
 }
 
 impl Model {
     pub unsafe fn create(
-        path: &str,
-        texture_path: &str,
+        // path: &str,
+        // texture_path: &str,
+        model_name: &str,
         logical_device: &ash::Device,
-
         pos_and_rot: &[(g_types::Vec3, cgmath::Quaternion<f32>)],
     ) -> Result<Self> {
-        let (vertices, indices) = g_utils::load_model(path)?;
+        let model_path = format!("resources/{}/{}.obj", model_name, model_name);
+        let model_texture_path = format!("resources/{}/{}.png", model_name, model_name);
+        let model_render_info = format!("resources/{}/render_info.toml", model_name);
+
+        let render_info = g_types::RenderInfo::create(&model_render_info)?;
+
+        let (vertices, indices) = g_utils::load_model(&model_path)?;
 
         let vertex_buffer = VertexBuffer::create(&vertices)?;
 
         let index_buffer = IndexBuffer::create(&indices)?;
 
-        let instance_buffer = InstanceBuffer::create(pos_and_rot)?;
+        let instance_buffer = InstanceBuffer::create(pos_and_rot, &render_info)?;
 
-        let texture = Texture::create(texture_path)?;
+        let texture = Texture::create(&model_texture_path)?;
 
         let descriptor_set_layout = Self::create_descriptor_set_layout(logical_device)?;
 
-        let pipeline_layout =
-            g_utils::create_pipeline_layout(logical_device, descriptor_set_layout)?;
+        let pipeline_layout = Self::create_pipeline_layout(logical_device, descriptor_set_layout)?;
 
         let pipeline = vk::Pipeline::null();
 
@@ -1115,27 +1183,54 @@ impl Model {
             descriptor_pool,
             descriptor_sets,
             instance_count: pos_and_rot.len() as u32,
+            render_info,
         })
+    }
+
+    pub unsafe fn create_pipeline_layout(
+        logical_device: &ash::Device,
+        descriptor_set_layout: vk::DescriptorSetLayout,
+    ) -> Result<vk::PipelineLayout> {
+        let vert_push_constant_range = vk::PushConstantRange::builder()
+            .stage_flags(vk::ShaderStageFlags::VERTEX)
+            .offset(0)
+            .size(128 /*2 *  16 × 4 byte floats */)
+            .build();
+
+        // let frag_push_constant_range = vk::PushConstantRange::builder()
+        //     .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+        //     .offset(64)
+        //     .size(16 /* 2 x 4 byte ints */)
+        //     .build();
+
+        let set_layouts = &[descriptor_set_layout];
+        let push_constant_ranges = &[vert_push_constant_range];
+        let layout_info = vk::PipelineLayoutCreateInfo::builder()
+            .set_layouts(set_layouts)
+            .push_constant_ranges(push_constant_ranges);
+        logical_device
+            .create_pipeline_layout(&layout_info, None)
+            .map_err(|e| anyhow!("{}", e))
     }
 
     pub unsafe fn create_descriptor_set_layout(
         logical_device: &ash::Device,
     ) -> Result<vk::DescriptorSetLayout> {
-        let ubo_binding = vk::DescriptorSetLayoutBinding::builder()
-            .binding(0)
-            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::VERTEX)
-            .build();
+        // let ubo_binding = vk::DescriptorSetLayoutBinding::builder()
+        //     .binding(0)
+        //     .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+        //     .descriptor_count(1)
+        //     .stage_flags(vk::ShaderStageFlags::VERTEX)
+        //     .build();
 
         let sampler_binding = vk::DescriptorSetLayoutBinding::builder()
-            .binding(1)
+            .binding(0)
             .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::FRAGMENT)
             .build();
 
-        let bindings = &[ubo_binding, sampler_binding];
+        let bindings = &[sampler_binding];
         let info = vk::DescriptorSetLayoutCreateInfo::builder().bindings(bindings);
 
         logical_device
@@ -1191,20 +1286,6 @@ impl Model {
         uniform_buffers: &[UniformBuffer],
     ) -> Result<()> {
         (0..swapchain_images_count).enumerate().for_each(|(i, _)| {
-            let buffer_info = &[vk::DescriptorBufferInfo::builder()
-                .buffer(uniform_buffers[i].get_buffer())
-                .offset(0)
-                .range(uniform_buffers[i].get_size())
-                .build()];
-
-            let ubo_write = vk::WriteDescriptorSet::builder()
-                .dst_set(self.descriptor_sets[i])
-                .dst_binding(0)
-                .dst_array_element(0)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
-                .buffer_info(buffer_info)
-                .build();
-
             let image_info = &[vk::DescriptorImageInfo::builder()
                 .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
                 .image_view(self.texture.image_view)
@@ -1213,16 +1294,14 @@ impl Model {
 
             let image_info_write = vk::WriteDescriptorSet::builder()
                 .dst_set(self.descriptor_sets[i])
-                .dst_binding(1)
+                .dst_binding(0)
                 .dst_array_element(0)
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .image_info(image_info)
                 .build();
 
-            logical_device.update_descriptor_sets(
-                &[ubo_write, image_info_write],
-                &[] as &[vk::CopyDescriptorSet],
-            );
+            logical_device
+                .update_descriptor_sets(&[image_info_write], &[] as &[vk::CopyDescriptorSet]);
         });
 
         Ok(())
@@ -1236,10 +1315,10 @@ impl Model {
         extent: vk::Extent2D,
     ) -> Result<()> {
         let vert_code = read_spv(&mut fs::File::open(
-            SHADER_FILES.get("instanced.vert").unwrap(),
+            SHADER_FILES.get("instanced_vert").unwrap(),
         )?)?;
         let frag_code = read_spv(&mut fs::File::open(
-            SHADER_FILES.get("instanced.frag").unwrap(),
+            SHADER_FILES.get("instanced_frag").unwrap(),
         )?)?;
 
         let vert_shader_module = g_utils::create_shader_module(logical_device, &vert_code)?;
@@ -1305,7 +1384,7 @@ impl Model {
             .rasterizer_discard_enable(false)
             .polygon_mode(vk::PolygonMode::FILL)
             .line_width(1.0)
-            .cull_mode(vk::CullModeFlags::BACK)
+            .cull_mode(self.render_info.polygon_info.cull_mode)
             .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
             .depth_bias_enable(false);
 
@@ -1379,14 +1458,6 @@ impl Model {
             size_of::<g_types::Mat4>(),
         );
 
-        logical_device.cmd_push_constants(
-            command_buffer,
-            self.pipeline_layout,
-            vk::ShaderStageFlags::VERTEX,
-            0,
-            view_bytes,
-        );
-
         let proj_bytes = std::slice::from_raw_parts(
             proj as *const g_types::Mat4 as *const u8,
             size_of::<g_types::Mat4>(),
@@ -1396,8 +1467,8 @@ impl Model {
             command_buffer,
             self.pipeline_layout,
             vk::ShaderStageFlags::VERTEX,
-            size_of::<g_types::Mat4>() as u32,
-            proj_bytes,
+            0,
+            &[view_bytes, proj_bytes].concat(),
         );
     }
 
@@ -1408,7 +1479,7 @@ impl Model {
         image_index: usize,
         view: &g_types::Mat4,
         proj: &g_types::Mat4,
-    ) -> Result<()> {
+    ) {
         logical_device.cmd_bind_pipeline(
             command_buffer,
             vk::PipelineBindPoint::GRAPHICS,
@@ -1451,8 +1522,6 @@ impl Model {
             0,
             0,
         );
-
-        Ok(())
     }
 
     pub unsafe fn destroy(&mut self, logical_device: &ash::Device) {
@@ -1468,8 +1537,7 @@ impl Model {
 }
 
 pub struct ModelManager {
-    pub models: HashMap<String, Model>,
-
+    pub models: Arc<RefCell<Vec<Model>>>,
     pub buffer_allocator: BufferMemoryAllocator,
     pub texture_engine: TextureMemoryAllocator,
 }
@@ -1480,8 +1548,7 @@ impl ModelManager {
         let texture_engine = TextureMemoryAllocator::create()?;
 
         Ok(Self {
-            models: HashMap::new(),
-
+            models: Arc::new(RefCell::new(Vec::new())),
             buffer_allocator,
             texture_engine,
         })
@@ -1493,7 +1560,7 @@ impl ModelManager {
         render_pass: vk::RenderPass,
         extent: vk::Extent2D,
     ) -> Result<()> {
-        for model in self.models.values_mut() {
+        for model in self.models.borrow_mut().iter_mut() {
             logical_device.destroy_pipeline(model.pipeline, None);
             model.create_pipeline(logical_device, msaa_samples, render_pass, extent)?;
         }
@@ -1503,12 +1570,13 @@ impl ModelManager {
 
     pub unsafe fn create_pipelines(
         &mut self,
+
         logical_device: &ash::Device,
         msaa_samples: vk::SampleCountFlags,
         render_pass: vk::RenderPass,
         extent: vk::Extent2D,
     ) -> Result<()> {
-        for model in self.models.values_mut() {
+        for model in self.models.borrow_mut().iter_mut() {
             model.create_pipeline(logical_device, msaa_samples, render_pass, extent)?;
         }
 
@@ -1520,7 +1588,7 @@ impl ModelManager {
         logical_device: &ash::Device,
         swapchain_images_count: usize,
     ) -> Result<()> {
-        for model in self.models.values_mut() {
+        for model in self.models.borrow_mut().iter_mut() {
             model.create_descriptor_pool_and_sets(logical_device, swapchain_images_count)?;
         }
 
@@ -1529,10 +1597,11 @@ impl ModelManager {
 
     pub unsafe fn update_descriptor_sets(
         &mut self,
+
         logical_device: &ash::Device,
         swapchain_images_count: usize,
     ) -> Result<()> {
-        for model in self.models.values_mut() {
+        for model in self.models.borrow_mut().iter_mut() {
             model.update_descriptor_sets(
                 logical_device,
                 swapchain_images_count,
@@ -1557,13 +1626,14 @@ impl ModelManager {
             physical_device,
             queue_set,
             &command_pool_set,
-            &mut self.models.iter_mut().collect::<HashMap<_, _>>(),
+            self.models.clone(),
         )?;
 
         Ok(())
     }
     pub unsafe fn create_textures(
         &mut self,
+
         instance: &ash::Instance,
         logical_device: &ash::Device,
         physical_device: vk::PhysicalDevice,
@@ -1572,33 +1642,28 @@ impl ModelManager {
             instance,
             logical_device,
             physical_device,
-            &mut self.models.iter_mut().collect::<HashMap<_, _>>(),
+            self.models.clone(),
         )?;
 
         Ok(())
     }
 
-    pub unsafe fn load_models_from_scene(
-        &mut self,
-        scene: &Scene,
-        logical_device: &ash::Device,
-    ) -> Result<()> {
-        for (model_name, pos_and_rot) in scene.models.iter() {
-            let model = Model::create(
-                &format!("resources/{}/{}.obj", model_name, model_name),
-                &format!("resources/{}/{}.png", model_name, model_name),
-                logical_device,
-                pos_and_rot,
-            )?;
-            self.add_model(model_name, model);
-        }
+    // pub unsafe fn load_models_from_scene(
+    //     &mut self,
+    //     scene: &Scene,
+    //     logical_device: &ash::Device,
+    // ) -> Result<()> {
+    //     for model in scene.models.iter() {
+    //         // let model = Model::create(model_name, logical_device, pos_and_rot)?;
+    //         // self.add_model(&model);
+    //     }
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
     pub unsafe fn create_buffers(&mut self, logical_device: &ash::Device) -> Result<()> {
         self.buffer_allocator
-            .create_buffers(logical_device, &mut self.models)?;
+            .create_buffers(logical_device, self.models.clone())?;
 
         Ok(())
     }
@@ -1606,7 +1671,7 @@ impl ModelManager {
     pub unsafe fn calculate_buffer_offsets_and_size(&mut self) -> u64 {
         let mut acc = 0;
 
-        for model in self.models.values_mut() {
+        for model in self.models.borrow_mut().iter_mut() {
             acc = g_utils::align_up(acc, model.vertex_buffer.reqs.unwrap().alignment);
             model.vertex_buffer.offset = Some(acc);
             acc += model.vertex_buffer.get_required_size();
@@ -1642,21 +1707,21 @@ impl ModelManager {
             logical_device,
             queue_set,
             command_pool_set,
-            &mut self.models.values_mut().collect::<Vec<_>>(),
+            self.models.clone(),
             size,
         )?;
 
         Ok(())
     }
 
-    pub unsafe fn add_model(&mut self, name: &str, model: Model) {
-        self.models.insert(name.to_string(), model);
+    pub fn add_models(&mut self, models: Arc<RefCell<Vec<Model>>>) {
+        self.models = models;
     }
 
     pub unsafe fn destroy(&mut self, logical_device: &ash::Device) {
-        self.models
-            .values_mut()
-            .for_each(|model| model.destroy(logical_device));
+        // self.models
+        //     .values_mut()
+        //     .for_each(|model| model.destroy(logical_device));
 
         self.texture_engine.destroy(logical_device);
 
@@ -1665,25 +1730,36 @@ impl ModelManager {
 }
 
 pub struct Scene {
-    models: HashMap<String, Vec<(g_types::Vec3, cgmath::Quaternion<f32>)>>,
+    models: Arc<RefCell<Vec<Model>>>, //, Vec<(g_types::Vec3, cgmath::Quaternion<f32>)>>,
+    pub terrain: Terrain,
+    pub model_manager: ModelManager,
 }
 
 impl Scene {
-    pub unsafe fn create() -> Result<Self> {
+    pub unsafe fn create(terrain: Terrain, logical_device: &ash::Device) -> Result<Self> {
+        let model_manager = ModelManager::create()?;
+
+        // model_manager.load_models_from_scene(&logical_device)?;
+
         let mut rng = rand::thread_rng();
         Ok(Self {
-            models: [
-                (
-                    "landscape",
-                    vec![(g_types::vec3(0.0, 0.0, 0.0), Quaternion::zero())],
-                ),
-                (
+            terrain,
+            model_manager,
+            models: Arc::new(RefCell::new(vec![
+                // Model::create(
+                //     "landscape",
+                //     logical_device,
+                //     &[(g_types::vec3(0.0, 0.0, 0.0), Quaternion::zero())],
+                // )?,
+                Model::create(
                     "viking_room",
-                    vec![(g_types::vec3(0.0, 0.0, 4.0), Quaternion::zero())],
-                ),
-                (
-                    "sphere",
-                    (0..10000)
+                    logical_device,
+                    &[(g_types::vec3(0.0, 0.0, 4.0), Quaternion::zero())],
+                )?,
+                Model::create(
+                    "grass_blade",
+                    logical_device,
+                    &(0..10000)
                         .map(|_| {
                             (
                                 g_types::vec3(
@@ -1698,30 +1774,48 @@ impl Scene {
                                 }),
                             )
                         })
-                        .collect(),
-                ),
-            ]
-            .into_iter()
-            .map(|(name, pos_and_rot)| (name.to_string(), pos_and_rot))
-            .collect::<HashMap<_, _>>(),
+                        .collect::<Vec<_>>(),
+                )?,
+            ])),
         })
+    }
+
+    pub fn load_models(&mut self) {
+        self.model_manager.add_models(self.models.clone());
+    }
+    pub unsafe fn draw_terrain(
+        &self,
+        logical_device: &ash::Device,
+        command_buffer: vk::CommandBuffer,
+        image_index: usize,
+        view: &g_types::Mat4,
+        proj: &g_types::Mat4,
+    ) {
+        self.terrain
+            .draw(logical_device, command_buffer, image_index, view, proj)
     }
 
     pub unsafe fn draw_instanced_models(
         &self,
         image_index: usize,
-        model_manager: &ModelManager,
         logical_device: &ash::Device,
         command_buffer: vk::CommandBuffer,
         view: &g_types::Mat4,
         proj: &g_types::Mat4,
-    ) -> Result<()> {
-        for (_model_index, (model_name, _positions)) in self.models.iter().enumerate() {
-            let model = model_manager.models.get(model_name).unwrap();
+    ) {
+        for (_model_index, model) in self.models.borrow().iter().enumerate() {
+            // let model = model_manager.models.get(model_name).unwrap();
 
-            model.draw_models(logical_device, command_buffer, image_index, view, proj)?;
+            model.draw_models(logical_device, command_buffer, image_index, view, proj);
         }
+    }
 
-        Ok(())
+    pub unsafe fn destroy(&mut self, logical_device: &ash::Device) {
+        self.terrain.destroy(logical_device);
+        self.models
+            .borrow_mut()
+            .iter_mut()
+            .for_each(|model| model.destroy(logical_device));
+        self.model_manager.destroy(logical_device);
     }
 }

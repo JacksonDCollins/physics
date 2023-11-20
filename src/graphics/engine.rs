@@ -4,9 +4,8 @@ use crate::graphics::utils as g_utils;
 
 use anyhow::{anyhow, Result};
 use ash::extensions::khr::Surface;
-use ash::vk::Handle;
 
-use std::time::Instant;
+// use std::time::Instant;
 
 use ash::vk;
 
@@ -18,16 +17,15 @@ pub struct RenderEngine {
     surface: vk::SurfaceKHR,
     surface_loader: Surface,
 
-    queue_set: g_utils::QueueSet,
-    swapchain: g_objects::Swapchain,
-    pipeline: g_objects::Pipeline,
-    presenter: g_objects::Presenter,
+    pub queue_set: g_utils::QueueSet,
+    pub swapchain: g_objects::Swapchain,
+    pub pipeline: g_objects::Pipeline,
+    pub presenter: g_objects::Presenter,
 
     queue_family_indices: g_utils::QueueFamilyIndices,
     swapchain_support: g_utils::SwapchainSupport,
     msaa_samples: vk::SampleCountFlags,
-
-    start: Instant,
+    // start: Instant,
 }
 
 impl RenderEngine {
@@ -104,8 +102,7 @@ impl RenderEngine {
             queue_family_indices,
             swapchain_support,
             msaa_samples,
-
-            start: Instant::now(),
+            // start: Instant::now(),
         })
     }
 
@@ -174,8 +171,8 @@ impl RenderEngine {
         frame: usize,
         resized: &mut bool,
         camera: &crate::controller::camera::Camera,
-        scene: &g_objects::Scene,
-        model_manager: &mut g_objects::ModelManager,
+        scene: &mut g_objects::Scene,
+        // model_manager: &mut g_objects::ModelManager,
     ) -> Result<()> {
         logical_device.wait_for_fences(
             &[self.presenter.in_flight_fences[frame]],
@@ -198,7 +195,7 @@ impl RenderEngine {
                         instance,
                         logical_device,
                         physical_device,
-                        model_manager,
+                        &mut scene.model_manager,
                     )
                 }
                 (index, _) => index as usize,
@@ -209,7 +206,7 @@ impl RenderEngine {
                     instance,
                     logical_device,
                     physical_device,
-                    model_manager,
+                    &mut scene.model_manager,
                 )
             }
             Err(error) => return Err(anyhow!(error)),
@@ -226,7 +223,7 @@ impl RenderEngine {
         self.presenter.images_in_flight[image_index] = self.presenter.in_flight_fences[frame];
 
         // self.update_uniform_buffer(image_index, camera, model_manager)?;
-        self.update_command_buffer(logical_device, image_index, scene, model_manager, camera)?;
+        self.update_command_buffer(logical_device, image_index, scene, camera)?;
 
         let wait_semaphores = &[self.presenter.image_available_semaphores[frame]];
         let wait_stages = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -268,7 +265,7 @@ impl RenderEngine {
                 instance,
                 logical_device,
                 physical_device,
-                model_manager,
+                &mut scene.model_manager,
             )?;
         } else if let Err(e) = result {
             return Err(anyhow!(e));
@@ -316,7 +313,6 @@ impl RenderEngine {
         logical_device: &ash::Device,
         image_index: usize,
         scene: &g_objects::Scene,
-        model_manager: &g_objects::ModelManager,
         camera: &crate::controller::camera::Camera,
     ) -> Result<()> {
         let command_pool = self.presenter.command_pool_sets[image_index].graphics;
@@ -375,14 +371,9 @@ impl RenderEngine {
 
         logical_device.cmd_begin_render_pass(command_buffer, &info, vk::SubpassContents::INLINE);
 
-        scene.draw_instanced_models(
-            image_index,
-            model_manager,
-            logical_device,
-            command_buffer,
-            &view,
-            &proj,
-        )?;
+        scene.draw_terrain(logical_device, command_buffer, image_index, &view, &proj);
+
+        scene.draw_instanced_models(image_index, logical_device, command_buffer, &view, &proj);
 
         // scene.draw_instanced_models(image_index, model_manager, logical_device, command_buffer)?;
 
@@ -507,7 +498,7 @@ impl RenderEngine {
     //     Ok(command_buffer)
     // }
 
-    pub unsafe fn destroy(&mut self, logical_device: &ash::Device, instance: &ash::Instance) {
+    pub unsafe fn destroy(&mut self, logical_device: &ash::Device) {
         // self.model_manager.destroy(logical_device);
         // self.texture_engine.destroy(logical_device);
         self.presenter.destroy(logical_device);

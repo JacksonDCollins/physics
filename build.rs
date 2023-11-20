@@ -1,8 +1,4 @@
-use std::{
-    collections::HashMap,
-    env,
-    path::{Path, PathBuf},
-};
+use std::{collections::HashMap, env, path::Path};
 
 use glsl_to_spirv::ShaderType;
 
@@ -27,16 +23,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 in_path
                     .extension()
                     .and_then(|ext| match ext.to_string_lossy().as_ref() {
-                        "glsl" => match in_path.file_stem().and_then(|stem| {
-                            stem.to_str().and_then(|s| {
-                                PathBuf::from(s)
-                                    .extension()
-                                    .map(|s| s.to_string_lossy().to_string())
-                            })
-                        }) {
-                            Some(shader_type) => match shader_type.as_str() {
+                        "glsl" => match in_path
+                            .file_stem()
+                            .and_then(|stem| stem.to_str().and_then(|s| s.split('_').last()))
+                        {
+                            Some(shader_type) => match shader_type {
                                 "vert" => Some(ShaderType::Vertex),
                                 "frag" => Some(ShaderType::Fragment),
+                                "compute" => Some(ShaderType::Compute),
                                 _ => None,
                             },
                             _ => None,

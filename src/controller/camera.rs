@@ -27,7 +27,7 @@ impl Camera {
             pitch: cgmath::Rad(0.0),
             yaw: cgmath::Rad(0.0),
             roll: cgmath::Rad(0.0),
-            movement_speed: 1.,
+            movement_speed: 5.,
             mouse_sensitivity: 0.005,
         }
     }

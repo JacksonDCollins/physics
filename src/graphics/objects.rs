@@ -37,81 +37,84 @@ use super::types::Vertex;
 use super::utils::IsNull;
 use super::utils::SHADER_FILES;
 
-pub struct Swapchain {
-    pub swapchain_loader: ash::extensions::khr::Swapchain,
-    pub swapchain: vk::SwapchainKHR,
-    pub images: Vec<vk::Image>,
-    pub extent: vk::Extent2D,
-    pub format: vk::Format,
-    pub image_views: Vec<vk::ImageView>,
-}
+// pub struct Swapchain {
+//     pub swapchain_loader: ash::extensions::khr::Swapchain,
+//     pub swapchain: vk::SwapchainKHR,
+//     pub images: Vec<vk::Image>,
+//     pub extent: vk::Extent2D,
+//     pub format: vk::Format,
+//     pub image_views: Vec<vk::ImageView>,
+// }
 
-impl Swapchain {
-    pub unsafe fn create(
-        window: &Window,
-        instance: &ash::Instance,
-        logical_device: &ash::Device,
-        surface: vk::SurfaceKHR,
-        queue_family_indices: &g_utils::QueueFamilyIndices,
-        swapchain_support: &g_utils::SwapchainSupport,
-    ) -> Result<Self> {
-        let (swapchain_loader, swapchain, images, extent, format) = g_utils::create_swapchain(
-            window,
-            instance,
-            logical_device,
-            surface,
-            queue_family_indices,
-            swapchain_support,
-        )?;
+// impl Swapchain {
+//     pub unsafe fn create(
+//         window: &Window,
+//         instance: &wgpu::Instance,
+//         device: &wgpu::Device,
+//         surface: wgpu::Surface,
+//         // queue_family_indices: &g_utils::QueueFamilyIndices,
+//         queue: wgpu::Queue,
+//         swapchain_support: &g_utils::SwapchainSupport,
+//     ) -> Result<Self> {
+//         let (swapchain_loader, swapchain, images, extent, format) = g_utils::create_swapchain(
+//             window,
+//             instance,
+//             device,
+//             surface,
+//             // queue_family_indices,
+//             &queue,
+//             swapchain_support,
+//         )?;
 
-        let image_views = g_utils::create_swapchain_image_views(logical_device, &images, format)?;
+//         let image_views = g_utils::create_swapchain_image_views(logical_device, &images, format)?;
 
-        Ok(Self {
-            swapchain_loader,
-            swapchain,
-            images,
-            extent,
-            format,
-            image_views,
-        })
-    }
+//         Ok(Self {
+//             swapchain_loader,
+//             swapchain,
+//             images,
+//             extent,
+//             format,
+//             image_views,
+//         })
+//     }
 
-    pub unsafe fn destroy(&self, logical_device: &ash::Device) {
-        self.image_views
-            .iter()
-            .for_each(|image_view| logical_device.destroy_image_view(*image_view, None));
-        self.swapchain_loader
-            .destroy_swapchain(self.swapchain, None);
-    }
-}
+//     pub unsafe fn destroy(&self, logical_device: &ash::Device) {
+//         self.image_views
+//             .iter()
+//             .for_each(|image_view| logical_device.destroy_image_view(*image_view, None));
+//         self.swapchain_loader
+//             .destroy_swapchain(self.swapchain, None);
+//     }
+// }
 
-pub struct Pipeline {
-    pub render_pass: vk::RenderPass,
-}
+// pub struct Pipeline {
+//     pub render_pass_desciptor: vk::RenderPass,
+// }
 
-impl Pipeline {
-    pub unsafe fn create(
-        instance: &ash::Instance,
-        logical_device: &ash::Device,
-        physical_device: vk::PhysicalDevice,
-        swapchain: &Swapchain,
-        msaa_samples: vk::SampleCountFlags,
-    ) -> Result<Self> {
-        let render_pass = g_utils::create_render_pass(
-            instance,
-            logical_device,
-            physical_device,
-            swapchain,
-            msaa_samples,
-        )?;
+// impl Pipeline {
+//     pub unsafe fn create(
+//         instance: &wgpu::Instance,
+//         device: &wgpu::Device,
+//         // swapchain: &Swapchain,
+//         msaa_sample_state: wgpu::MultisampleState,
+//         render_pipeline_layout: wgpu::PipelineLayout,
+//     ) -> Result<Self> {
+//         let render_pass_desciptor = g_utils::create_render_pass_desciptor(
+//             instance,
+//             device,
+//             msaa_sample_state,
+//             render_pipeline_layout,
+//         )?;
 
-        Ok(Self { render_pass })
-    }
+//         Ok(Self {
+//             render_pass_desciptor,
+//         })
+//     }
 
-    pub unsafe fn destroy(&self, logical_device: &ash::Device) {
-        logical_device.destroy_render_pass(self.render_pass, None);
-    }
-}
+//     pub unsafe fn destroy(&self, logical_device: &ash::Device) {
+//         logical_device.destroy_render_pass(self.render_pass, None);
+//     }
+// }
 
 pub struct Presenter {
     pub command_pool_sets: Vec<g_types::CommandPoolSet>,
@@ -133,14 +136,12 @@ pub struct Presenter {
 
 impl Presenter {
     pub unsafe fn create(
-        logical_device: &ash::Device,
-        swapchain: &Swapchain,
-        pipeline: &Pipeline,
-        queue_family_indices: &g_utils::QueueFamilyIndices,
+        device: &wgpu::Device,
+        // swapchain: &Swapchain,
+        // pipeline: &Pipeline,
         model_manager: &mut ModelManager,
-        instance: &ash::Instance,
-        physical_device: vk::PhysicalDevice,
-        queue_set: &g_utils::QueueSet,
+        instance: &wgpu::Instance,
+
         msaa_samples: vk::SampleCountFlags,
     ) -> Result<Self> {
         let master_command_pool_set =
@@ -393,10 +394,7 @@ pub struct UniformBuffer {
 }
 
 impl UniformBuffer {
-    pub unsafe fn create(
-        _logical_device: &ash::Device,
-        ubo: g_types::UniformBufferObject,
-    ) -> Result<Self> {
+    pub unsafe fn create(ubo: g_types::UniformBufferObject) -> Result<Self> {
         let size = std::mem::size_of::<g_types::UniformBufferObject>() as u64;
 
         Ok(Self {
@@ -652,8 +650,8 @@ pub struct Terrain {
     pub compute_buffer: ComputeBuffer<Vertex>,
     pub index_buffer: IndexBuffer,
     pub instance_buffer: InstanceBuffer,
-    pub descriptor_set_layout: vk::DescriptorSetLayout,
-    pub pipeline_layout: vk::PipelineLayout,
+    pub bind_group_layout: wgpu::BindGroupLayout,
+    pub pipeline_layout: wgpu::PipelineLayout,
     pub pipeline: vk::Pipeline,
     pub descriptor_pool: vk::DescriptorPool,
     pub descriptor_sets: Vec<vk::DescriptorSet>,
@@ -662,7 +660,7 @@ pub struct Terrain {
 }
 
 impl Terrain {
-    pub unsafe fn create(logical_device: &ash::Device) -> Result<Self> {
+    pub unsafe fn create(logical_device: &wgpu::Device) -> Result<Self> {
         // let (vertices, indices) = g_utils::load_model("resources/landscape/landscape.obj")?;
         // let vertex_buffer = VertexBuffer::create(&vertices)?;
         // let index_buffer = IndexBuffer::create(&indices)?;
@@ -772,9 +770,10 @@ impl Terrain {
             &render_info,
         )?;
 
-        let descriptor_set_layout = Self::create_descriptor_set_layout(logical_device)?;
+        // let descriptor_set_layout = Self::create_descriptor_set_layout(logical_device)?;
+        let bind_group_layout = Self::create_bind_group_layout(logical_device);
 
-        let pipeline_layout = Self::create_pipeline_layout(logical_device, descriptor_set_layout)?;
+        let pipeline_layout = Self::create_pipeline_layout(logical_device, &bind_group_layout);
 
         let pipeline = vk::Pipeline::null();
 
@@ -787,7 +786,7 @@ impl Terrain {
             compute_buffer,
             index_buffer,
             instance_buffer,
-            descriptor_set_layout,
+            bind_group_layout,
             pipeline_layout,
             pipeline,
             descriptor_pool,
@@ -882,29 +881,56 @@ impl Terrain {
             0,
         );
     }
-    pub unsafe fn create_descriptor_set_layout(
-        logical_device: &ash::Device,
-    ) -> Result<vk::DescriptorSetLayout> {
-        let in_binding = vk::DescriptorSetLayoutBinding::builder()
-            .binding(1)
-            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::COMPUTE)
-            .build();
+    pub unsafe fn create_bind_group_layout(logical_device: &wgpu::Device) -> wgpu::BindGroupLayout {
+        //Result<vk::DescriptorSetLayout> {
+        // let in_binding = vk::DescriptorSetLayoutBinding::builder()
+        //     .binding(1)
+        //     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+        //     .descriptor_count(1)
+        //     .stage_flags(vk::ShaderStageFlags::COMPUTE)
+        //     .build();
 
-        let out_binding = vk::DescriptorSetLayoutBinding::builder()
-            .binding(2)
-            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::COMPUTE)
-            .build();
+        // let out_binding = vk::DescriptorSetLayoutBinding::builder()
+        //     .binding(2)
+        //     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+        //     .descriptor_count(1)
+        //     .stage_flags(vk::ShaderStageFlags::COMPUTE)
+        //     .build();
 
-        let bindings = &[in_binding, out_binding];
-        let info = vk::DescriptorSetLayoutCreateInfo::builder().bindings(bindings);
+        // let bindings = &[in_binding, out_binding];
+        // let info = vk::DescriptorSetLayoutCreateInfo::builder().bindings(bindings);
 
-        logical_device
-            .create_descriptor_set_layout(&info, None)
-            .map_err(|e| anyhow!("{}", e))
+        // logical_device
+        //     .create_descriptor_set_layout(&info, None)
+        //     .map_err(|e| anyhow!("{}", e))
+        let in_binding = wgpu::BindGroupLayoutEntry {
+            binding: 1,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+
+        let out_binding = wgpu::BindGroupLayoutEntry {
+            binding: 2,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+
+        let bind_group_layout_desc = wgpu::BindGroupLayoutDescriptor {
+            entries: &[in_binding, out_binding],
+            label: None,
+        };
+
+        logical_device.create_bind_group_layout(&bind_group_layout_desc)
     }
 
     pub unsafe fn create_descriptor_pool_and_sets(
@@ -990,30 +1016,45 @@ impl Terrain {
         Ok(())
     }
 
-    pub unsafe fn create_pipeline_layout(
-        logical_device: &ash::Device,
-        descriptor_set_layout: vk::DescriptorSetLayout,
-    ) -> Result<vk::PipelineLayout> {
-        let vert_push_constant_range = vk::PushConstantRange::builder()
-            .stage_flags(vk::ShaderStageFlags::VERTEX)
-            .offset(0)
-            .size(128 /*2 *  16 × 4 byte floats */)
-            .build();
-
-        // let frag_push_constant_range = vk::PushConstantRange::builder()
-        //     .stage_flags(vk::ShaderStageFlags::FRAGMENT)
-        //     .offset(64)
-        //     .size(16 /* 2 x 4 byte ints */)
+    pub fn create_pipeline_layout(
+        logical_device: &wgpu::Device,
+        // descriptor_set_layout: vk::DescriptorSetLayout,
+        bind_group_layout: &wgpu::BindGroupLayout,
+    ) -> wgpu::PipelineLayout {
+        //Result<vk::PipelineLayout> {
+        // let vert_push_constant_range = vk::PushConstantRange::builder()
+        //     .stage_flags(vk::ShaderStageFlags::VERTEX)
+        //     .offset(0)
+        //     .size(128 /*2 *  16 × 4 byte floats */)
         //     .build();
 
-        let set_layouts = &[descriptor_set_layout];
-        let push_constant_ranges = &[vert_push_constant_range];
-        let layout_info = vk::PipelineLayoutCreateInfo::builder()
-            .set_layouts(set_layouts)
-            .push_constant_ranges(push_constant_ranges);
-        logical_device
-            .create_pipeline_layout(&layout_info, None)
-            .map_err(|e| anyhow!("{}", e))
+        // // let frag_push_constant_range = vk::PushConstantRange::builder()
+        // //     .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+        // //     .offset(64)
+        // //     .size(16 /* 2 x 4 byte ints */)
+        // //     .build();
+
+        // let set_layouts = &[descriptor_set_layout];
+        // let push_constant_ranges = &[vert_push_constant_range];
+        // let layout_info = vk::PipelineLayoutCreateInfo::builder()
+        //     .set_layouts(set_layouts)
+        //     .push_constant_ranges(push_constant_ranges);
+
+        let vert_push_constant_range = wgpu::PushConstantRange {
+            stages: wgpu::ShaderStages::VERTEX,
+            range: 0..128,
+        };
+
+        let set_layouts = &[bind_group_layout];
+
+        let layout_info = wgpu::PipelineLayoutDescriptor {
+            bind_group_layouts: set_layouts,
+            push_constant_ranges: &[vert_push_constant_range],
+            label: None,
+        };
+
+        logical_device.create_pipeline_layout(&layout_info)
+        // .map_err(|e| anyhow!("{}", e))
     }
 
     pub unsafe fn create_pipeline(
@@ -1182,8 +1223,8 @@ pub struct Model {
     pub vertex_buffer: VertexBuffer,
     pub index_buffer: IndexBuffer,
     pub instance_buffer: InstanceBuffer,
-    pub descriptor_set_layout: vk::DescriptorSetLayout,
-    pub pipeline_layout: vk::PipelineLayout,
+    pub bind_group_layout: wgpu::BindGroupLayout,
+    pub pipeline_layout: wgpu::PipelineLayout,
     pub pipeline: vk::Pipeline,
     pub descriptor_pool: vk::DescriptorPool,
     pub descriptor_sets: Vec<vk::DescriptorSet>,
@@ -1197,7 +1238,7 @@ impl Model {
         // path: &str,
         // texture_path: &str,
         model_name: &str,
-        logical_device: &ash::Device,
+        logical_device: &wgpu::Device,
         pos_and_rot: &[(g_types::Vec3, cgmath::Quaternion<f32>)],
     ) -> Result<Self> {
         let model_path = format!("resources/{}/{}.obj", model_name, model_name);
@@ -1216,9 +1257,9 @@ impl Model {
 
         let texture = Texture::create(&model_texture_path)?;
 
-        let descriptor_set_layout = Self::create_descriptor_set_layout(logical_device)?;
+        let bind_group_layout = Self::create_bind_group_layout(logical_device);
 
-        let pipeline_layout = Self::create_pipeline_layout(logical_device, descriptor_set_layout)?;
+        let pipeline_layout = Self::create_pipeline_layout(logical_device, bind_group_layout);
 
         let pipeline = vk::Pipeline::null();
 
@@ -1229,7 +1270,7 @@ impl Model {
             vertex_buffer,
             index_buffer,
             instance_buffer,
-            descriptor_set_layout,
+            bind_group_layout,
             pipeline_layout,
             pipeline,
             texture,
@@ -1241,54 +1282,85 @@ impl Model {
     }
 
     pub unsafe fn create_pipeline_layout(
-        logical_device: &ash::Device,
-        descriptor_set_layout: vk::DescriptorSetLayout,
-    ) -> Result<vk::PipelineLayout> {
-        let vert_push_constant_range = vk::PushConstantRange::builder()
-            .stage_flags(vk::ShaderStageFlags::VERTEX)
-            .offset(0)
-            .size(128 /*2 *  16 × 4 byte floats */)
-            .build();
-
-        // let frag_push_constant_range = vk::PushConstantRange::builder()
-        //     .stage_flags(vk::ShaderStageFlags::FRAGMENT)
-        //     .offset(64)
-        //     .size(16 /* 2 x 4 byte ints */)
+        logical_device: &wgpu::Device,
+        descriptor_set_layout: wgpu::BindGroupLayout,
+    ) -> wgpu::PipelineLayout {
+        // Result<vk::PipelineLayout> {
+        // let vert_push_constant_range = vk::PushConstantRange::builder()
+        //     .stage_flags(vk::ShaderStageFlags::VERTEX)
+        //     .offset(0)
+        //     .size(128 /*2 *  16 × 4 byte floats */)
         //     .build();
 
-        let set_layouts = &[descriptor_set_layout];
-        let push_constant_ranges = &[vert_push_constant_range];
-        let layout_info = vk::PipelineLayoutCreateInfo::builder()
-            .set_layouts(set_layouts)
-            .push_constant_ranges(push_constant_ranges);
-        logical_device
-            .create_pipeline_layout(&layout_info, None)
-            .map_err(|e| anyhow!("{}", e))
+        // // let frag_push_constant_range = vk::PushConstantRange::builder()
+        // //     .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+        // //     .offset(64)
+        // //     .size(16 /* 2 x 4 byte ints */)
+        // //     .build();
+
+        // let set_layouts = &[descriptor_set_layout];
+        // let push_constant_ranges = &[vert_push_constant_range];
+        // let layout_info = vk::PipelineLayoutCreateInfo::builder()
+        //     .set_layouts(set_layouts)
+        //     .push_constant_ranges(push_constant_ranges);
+        // logical_device
+        //     .create_pipeline_layout(&layout_info, None)
+        //     .map_err(|e| anyhow!("{}", e))
+
+        let vert_push_constant_range = wgpu::PushConstantRange {
+            stages: wgpu::ShaderStages::VERTEX,
+            range: 0..128,
+        };
+
+        let set_layouts = &[&descriptor_set_layout];
+
+        let layout_info = wgpu::PipelineLayoutDescriptor {
+            bind_group_layouts: set_layouts,
+            push_constant_ranges: &[vert_push_constant_range],
+            label: None,
+        };
+
+        logical_device.create_pipeline_layout(&layout_info)
     }
 
-    pub unsafe fn create_descriptor_set_layout(
-        logical_device: &ash::Device,
-    ) -> Result<vk::DescriptorSetLayout> {
-        // let ubo_binding = vk::DescriptorSetLayoutBinding::builder()
+    pub unsafe fn create_bind_group_layout(logical_device: &wgpu::Device) -> wgpu::BindGroupLayout {
+        //Result<vk::DescriptorSetLayout> {
+        // // let ubo_binding = vk::DescriptorSetLayoutBinding::builder()
+        // //     .binding(0)
+        // //     .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+        // //     .descriptor_count(1)
+        // //     .stage_flags(vk::ShaderStageFlags::VERTEX)
+        // //     .build();
+
+        // let sampler_binding = vk::DescriptorSetLayoutBinding::builder()
         //     .binding(0)
-        //     .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+        //     .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
         //     .descriptor_count(1)
-        //     .stage_flags(vk::ShaderStageFlags::VERTEX)
+        //     .stage_flags(vk::ShaderStageFlags::FRAGMENT)
         //     .build();
 
-        let sampler_binding = vk::DescriptorSetLayoutBinding::builder()
-            .binding(0)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT)
-            .build();
+        // let bindings = &[sampler_binding];
+        // let info = vk::DescriptorSetLayoutCreateInfo::builder().bindings(bindings);
+
+        // logical_device
+        //     .create_descriptor_set_layout(&info, None)
+        //     .map_err(|e| anyhow!("{}", e))
+
+        let sampler_binding = wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        };
 
         let bindings = &[sampler_binding];
-        let info = vk::DescriptorSetLayoutCreateInfo::builder().bindings(bindings);
 
-        logical_device
-            .create_descriptor_set_layout(&info, None)
-            .map_err(|e| anyhow!("{}", e))
+        let layout_info = wgpu::BindGroupLayoutDescriptor {
+            entries: bindings,
+            label: None,
+        };
+
+        logical_device.create_bind_group_layout(&layout_info)
     }
 
     pub unsafe fn create_descriptor_pool_and_sets(
@@ -1789,7 +1861,7 @@ pub struct Scene {
 }
 
 impl Scene {
-    pub unsafe fn create(terrain: Terrain, logical_device: &ash::Device) -> Result<Self> {
+    pub unsafe fn create(terrain: Terrain, logical_device: &wgpu::Device) -> Result<Self> {
         let model_manager = ModelManager::create()?;
 
         // model_manager.load_models_from_scene(&logical_device)?;

@@ -35,35 +35,97 @@ pub struct App {
 }
 
 impl App {
-    pub unsafe fn create(window: &Window, event_loop: &EventLoop<()>) -> Result<Self> {
+    pub async unsafe fn create(window: &Window, event_loop: &EventLoop<()>) -> Result<Self> {
+        let size = window.inner_size();
+
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            ..Default::default()
+        });
+
+        let surface = instance.create_surface(window).unwrap();
+
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::default(),
+                compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
+            })
+            .await
+            .unwrap();
+
+        log::info!(
+            "Using device {} and backend {:?}",
+            adapter.get_info().name,
+            adapter.get_info().backend
+        );
+
+        let (device, queue) = adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    features: wgpu::Features::empty(),
+                    limits: wgpu::Limits::default(),
+                    label: None,
+                },
+                None, // Trace path
+            )
+            .await
+            .unwrap();
+
+        let surface_caps = surface.get_capabilities(&adapter);
+        let surface_format = surface_caps
+            .formats
+            .iter()
+            .copied()
+            .find(|f| f.is_srgb())
+            .unwrap_or(surface_caps.formats[0]);
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: surface_format,
+            width: size.width,
+            height: size.height,
+            present_mode: surface_caps.present_modes[0],
+            alpha_mode: surface_caps.alpha_modes[0],
+            view_formats: vec![],
+        };
+        surface.configure(&device, &config);
+
+        let msaa_sample_state = wgpu::MultisampleState {
+            count: 16,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        };
+
+        // let swapchain_support = graphics::utils::SwapchainSupport::get(surface, &adapter)?;
+
         // let loader = LibloadingLoader::new(LIBRARY)?;
         // let entry = Entry::new(loader).map_err(|e| anyhow!("{}", e))?;
-        let entry = Entry::linked();
-        let (instance, dbg_messenger, debug_utils_loader) =
-            graphics::utils::create_instance(&entry, event_loop)?;
-        let surface = ash_window::create_surface(
-            &entry,
-            &instance,
-            window.raw_display_handle(),
-            window.raw_window_handle(),
-            None,
-        )?;
-        let surface_loader = Surface::new(&entry, &instance);
+        // let entry = Entry::linked();
+        // let (instance, dbg_messenger, debug_utils_loader) =
+        //     graphics::utils::create_instance(&entry, event_loop)?;
+        // let surface = ash_window::create_surface(
+        //     &entry,
+        //     &instance,
+        //     window.raw_display_handle(),
+        //     window.raw_window_handle(),
+        //     None,
+        // )?;
+        // let surface_loader = Surface::new(&entry, &instance);
 
-        let (physical_device, queue_family_indices, swapchain_support, msaa_samples) =
-            graphics::utils::pick_physical_device(&instance, surface, &surface_loader)?;
+        // let (physical_device, queue_family_indices, swapchain_support, msaa_samples) =
+        //     graphics::utils::pick_physical_device(&instance, surface, &surface_loader)?;
 
-        let (logical_device, queue_set) = graphics::utils::create_logical_device(
-            &entry,
-            &instance,
-            physical_device,
-            queue_family_indices,
-        )?;
+        // let (logical_device, queue_set) = graphics::utils::create_logical_device(
+        //     &entry,
+        //     &instance,
+        //     physical_device,
+        //     queue_family_indices,
+        // )?;
 
         // let mut model_manager = graphics::objects::ModelManager::create()?;
 
-        let terrain = graphics::objects::Terrain::create(&logical_device)?;
-        let mut scene = graphics::objects::Scene::create(terrain, &logical_device)?;
+        let terrain = graphics::objects::Terrain::create(&device)?;
+        let mut scene = graphics::objects::Scene::create(terrain, &device)?;
 
         scene.load_models();
 
@@ -72,129 +134,131 @@ impl App {
         let render_engine = graphics::engine::RenderEngine::create(
             window,
             &instance,
-            &logical_device,
-            physical_device,
+            // &logical_device,
+            // physical_device,
+            &device,
             surface,
-            surface_loader,
-            queue_set,
-            queue_family_indices,
-            swapchain_support,
-            msaa_samples,
+            // surface_loader,
+            // queue_set,
+            // queue_family_indices,
+            &queue,
+            // swapchain_support,
+            msaa_sample_state,
             &mut scene.model_manager,
         )?;
 
         //HERE
 
-        for _ in 0..render_engine.swapchain.images.len() {
-            let uniform_buffer =
-                UniformBuffer::create(&logical_device, UniformBufferObject::default())?;
-            scene
-                .terrain
-                .buffer_memory_allocator
-                .add_uniform_buffer(uniform_buffer);
-        }
+        // for _ in 0..render_engine.swapchain.images.len() {
+        //     let uniform_buffer =
+        //         UniformBuffer::create(&logical_device, UniformBufferObject::default())?;
+        //     scene
+        //         .terrain
+        //         .buffer_memory_allocator
+        //         .add_uniform_buffer(uniform_buffer);
+        // }
 
-        scene.terrain.create_descriptor_pool_and_sets(
-            &logical_device,
-            render_engine.swapchain.images.len(),
-        )?;
+        // scene.terrain.create_descriptor_pool_and_sets(
+        //     &logical_device,
+        //     render_engine.swapchain.images.len(),
+        // )?;
 
-        scene.terrain.create_pipeline(
-            &logical_device,
-            msaa_samples,
-            render_engine.pipeline.render_pass,
-            render_engine.swapchain.extent,
-        )?;
+        // scene.terrain.create_pipeline(
+        //     &logical_device,
+        //     msaa_samples,
+        //     render_engine.pipeline.render_pass,
+        //     render_engine.swapchain.extent,
+        // )?;
 
-        scene.terrain.create_buffers(&logical_device)?;
+        // scene.terrain.create_buffers(&logical_device)?;
 
-        let mut acc = 0;
-        acc = g_utils::align_up(acc, scene.terrain.compute_buffer.reqs.unwrap().alignment);
-        scene.terrain.compute_buffer.offset = Some(acc);
-        acc += scene.terrain.compute_buffer.get_required_size();
+        // let mut acc = 0;
+        // acc = g_utils::align_up(acc, scene.terrain.compute_buffer.reqs.unwrap().alignment);
+        // scene.terrain.compute_buffer.offset = Some(acc);
+        // acc += scene.terrain.compute_buffer.get_required_size();
 
-        acc = g_utils::align_up(acc, scene.terrain.index_buffer.reqs.unwrap().alignment);
-        scene.terrain.index_buffer.offset = Some(acc);
-        acc += scene.terrain.index_buffer.get_required_size();
+        // acc = g_utils::align_up(acc, scene.terrain.index_buffer.reqs.unwrap().alignment);
+        // scene.terrain.index_buffer.offset = Some(acc);
+        // acc += scene.terrain.index_buffer.get_required_size();
 
-        acc = g_utils::align_up(acc, scene.terrain.instance_buffer.reqs.unwrap().alignment);
-        scene.terrain.instance_buffer.offset = Some(acc);
-        acc += scene.terrain.instance_buffer.get_required_size();
+        // acc = g_utils::align_up(acc, scene.terrain.instance_buffer.reqs.unwrap().alignment);
+        // scene.terrain.instance_buffer.offset = Some(acc);
+        // acc += scene.terrain.instance_buffer.get_required_size();
 
-        println!("acc: {}", acc);
+        // println!("acc: {}", acc);
 
-        scene.terrain.buffer_memory_allocator.create_memories(
-            &instance,
-            &logical_device,
-            physical_device,
-            acc,
-        )?;
+        // scene.terrain.buffer_memory_allocator.create_memories(
+        //     &instance,
+        //     &logical_device,
+        //     physical_device,
+        //     acc,
+        // )?;
 
-        g_utils::memcpy(
-            scene.terrain.compute_buffer.data.as_ptr(),
-            scene
-                .terrain
-                .buffer_memory_allocator
-                .stage_memory_ptr
-                .add(scene.terrain.compute_buffer.offset.unwrap() as usize)
-                .cast(),
-            scene.terrain.compute_buffer.data.len(),
-        );
+        // g_utils::memcpy(
+        //     scene.terrain.compute_buffer.data.as_ptr(),
+        //     scene
+        //         .terrain
+        //         .buffer_memory_allocator
+        //         .stage_memory_ptr
+        //         .add(scene.terrain.compute_buffer.offset.unwrap() as usize)
+        //         .cast(),
+        //     scene.terrain.compute_buffer.data.len(),
+        // );
 
-        g_utils::memcpy(
-            scene.terrain.index_buffer.indices.as_ptr(),
-            scene
-                .terrain
-                .buffer_memory_allocator
-                .stage_memory_ptr
-                .add(scene.terrain.index_buffer.offset.unwrap() as usize)
-                .cast(),
-            scene.terrain.index_buffer.indices.len(),
-        );
+        // g_utils::memcpy(
+        //     scene.terrain.index_buffer.indices.as_ptr(),
+        //     scene
+        //         .terrain
+        //         .buffer_memory_allocator
+        //         .stage_memory_ptr
+        //         .add(scene.terrain.index_buffer.offset.unwrap() as usize)
+        //         .cast(),
+        //     scene.terrain.index_buffer.indices.len(),
+        // );
 
-        g_utils::memcpy(
-            scene.terrain.instance_buffer.model_matrixes.as_ptr(),
-            scene
-                .terrain
-                .buffer_memory_allocator
-                .stage_memory_ptr
-                .add(scene.terrain.instance_buffer.offset.unwrap() as usize)
-                .cast(),
-            scene.terrain.instance_buffer.model_matrixes.len(),
-        );
+        // g_utils::memcpy(
+        //     scene.terrain.instance_buffer.model_matrixes.as_ptr(),
+        //     scene
+        //         .terrain
+        //         .buffer_memory_allocator
+        //         .stage_memory_ptr
+        //         .add(scene.terrain.instance_buffer.offset.unwrap() as usize)
+        //         .cast(),
+        //     scene.terrain.instance_buffer.model_matrixes.len(),
+        // );
 
-        g_utils::copy_buffer(
-            &logical_device,
-            render_engine.queue_set.transfer,
-            render_engine.presenter.master_command_pool_set.transfer,
-            scene.terrain.buffer_memory_allocator.staging_buffer,
-            scene.terrain.buffer_memory_allocator.vertex_index_buffer,
-            acc,
-            0,
-            0,
-        )?;
+        // g_utils::copy_buffer(
+        //     &logical_device,
+        //     render_engine.queue_set.transfer,
+        //     render_engine.presenter.master_command_pool_set.transfer,
+        //     scene.terrain.buffer_memory_allocator.staging_buffer,
+        //     scene.terrain.buffer_memory_allocator.vertex_index_buffer,
+        //     acc,
+        //     0,
+        //     0,
+        // )?;
 
-        logical_device.bind_buffer_memory(
-            scene.terrain.compute_buffer.buffer,
-            scene.terrain.buffer_memory_allocator.vertex_index_memory,
-            scene.terrain.compute_buffer.offset.unwrap(),
-        )?;
+        // logical_device.bind_buffer_memory(
+        //     scene.terrain.compute_buffer.buffer,
+        //     scene.terrain.buffer_memory_allocator.vertex_index_memory,
+        //     scene.terrain.compute_buffer.offset.unwrap(),
+        // )?;
 
-        logical_device.bind_buffer_memory(
-            scene.terrain.index_buffer.buffer,
-            scene.terrain.buffer_memory_allocator.vertex_index_memory,
-            scene.terrain.index_buffer.offset.unwrap(),
-        )?;
+        // logical_device.bind_buffer_memory(
+        //     scene.terrain.index_buffer.buffer,
+        //     scene.terrain.buffer_memory_allocator.vertex_index_memory,
+        //     scene.terrain.index_buffer.offset.unwrap(),
+        // )?;
 
-        logical_device.bind_buffer_memory(
-            scene.terrain.instance_buffer.buffer,
-            scene.terrain.buffer_memory_allocator.vertex_index_memory,
-            scene.terrain.instance_buffer.offset.unwrap(),
-        )?;
+        // logical_device.bind_buffer_memory(
+        //     scene.terrain.instance_buffer.buffer,
+        //     scene.terrain.buffer_memory_allocator.vertex_index_memory,
+        //     scene.terrain.instance_buffer.offset.unwrap(),
+        // )?;
 
-        scene
-            .terrain
-            .update_descriptor_sets(&logical_device, render_engine.swapchain.images.len())?;
+        // scene
+        //     .terrain
+        //     .update_descriptor_sets(&logical_device, render_engine.swapchain.images.len())?;
 
         // END HERE
         let input_engine = input::engine::InputEngine::create();

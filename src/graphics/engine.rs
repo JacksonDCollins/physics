@@ -18,90 +18,72 @@ pub struct RenderEngine {
     surface_loader: Surface,
 
     pub queue_set: g_utils::QueueSet,
-    pub swapchain: g_objects::Swapchain,
-    pub pipeline: g_objects::Pipeline,
+    // pub swapchain: g_objects::Swapchain,
+    // pub pipeline: g_objects::Pipeline,
     pub presenter: g_objects::Presenter,
 
     queue_family_indices: g_utils::QueueFamilyIndices,
     swapchain_support: g_utils::SwapchainSupport,
-    msaa_samples: vk::SampleCountFlags,
+    msaa_sample_state: wgpu::MultisampleState,
     // start: Instant,
 }
 
 impl RenderEngine {
     pub unsafe fn create(
         window: &Window,
-        instance: &ash::Instance,
-        logical_device: &ash::Device,
-        physical_device: vk::PhysicalDevice,
-        surface: vk::SurfaceKHR,
-        surface_loader: Surface,
-        queue_set: g_utils::QueueSet,
-        queue_family_indices: g_utils::QueueFamilyIndices,
-        swapchain_support: g_utils::SwapchainSupport,
-        msaa_samples: vk::SampleCountFlags,
+        instance: &wgpu::Instance,
+        // logical_device: &ash::Device,
+        // physical_device: vk::PhysicalDevice,
+        device: &wgpu::Device,
+        surface: wgpu::Surface,
+        // queue_set: g_utils::QueueSet,
+        // queue_family_indices: g_utils::QueueFamilyIndices,
+        queue: &wgpu::Queue,
+        // swapchain_support: g_utils::SwapchainSupport,
+        msaa_sample_state: wgpu::MultisampleState,
         model_manager: &mut g_objects::ModelManager,
     ) -> Result<Self> {
-        let swapchain = g_objects::Swapchain::create(
-            window,
-            instance,
-            logical_device,
-            surface,
-            &queue_family_indices,
-            &swapchain_support,
-        )?;
+        // let swapchain =
+        //     g_objects::Swapchain::create(window, instance, device, surface, &swapchain_support)?;
 
-        for _ in 0..swapchain.images.len() {
-            let uniform_buffer = g_objects::UniformBuffer::create(
-                logical_device,
-                g_types::UniformBufferObject::default(),
-            )?;
-            model_manager
-                .buffer_allocator
-                .add_uniform_buffer(uniform_buffer);
-        }
+        // for _ in 0..swapchain.images.len() {
+        let uniform_buffer =
+            g_objects::UniformBuffer::create(g_types::UniformBufferObject::default())?;
+        model_manager
+            .buffer_allocator
+            .add_uniform_buffer(uniform_buffer);
+        // }
 
-        let pipeline = g_objects::Pipeline::create(
-            instance,
-            logical_device,
-            physical_device,
-            &swapchain,
-            msaa_samples,
-            // &model_manager.texture_engine,
-        )?;
+        // let pipeline = g_objects::Pipeline::create(
+        //     instance,
+        //     device,
+        //     device,
+        //     msaa_sample_state,
+        //     // &model_manager.texture_engine,
+        // )?;
 
-        model_manager.create_descriptor_pools_and_sets(logical_device, swapchain.images.len())?;
+        // model_manager.create_descriptor_pools_and_sets(device, swapchain.images.len())?;
 
-        model_manager.create_pipelines(
-            logical_device,
-            msaa_samples,
-            pipeline.render_pass,
-            swapchain.extent,
-        )?;
+        // model_manager.create_pipelines(
+        //     logical_device,
+        //     msaa_samples,
+        //     pipeline.render_pass,
+        //     swapchain.extent,
+        // )?;
 
-        let presenter = g_objects::Presenter::create(
-            logical_device,
-            &swapchain,
-            &pipeline,
-            &queue_family_indices,
-            model_manager,
-            instance,
-            physical_device,
-            &queue_set,
-            msaa_samples,
-        )?;
+        // let presenter = g_objects::Presenter::create(
+        //     device,
+        //     // &swapchain,
+        //     // &pipeline,
+        //     // &queue_family_indices,
+        //     model_manager,
+        //     instance,
+        //     &queue_set,
+        //     msaa_samples,
+        // )?;
 
         Ok(Self {
             surface,
-            surface_loader,
-            queue_set,
-            swapchain,
-            pipeline,
-            presenter,
-
-            queue_family_indices,
-            swapchain_support,
-            msaa_samples,
             // start: Instant::now(),
         })
     }

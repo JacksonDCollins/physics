@@ -339,26 +339,32 @@ impl QueueFamilyIndices {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct SwapchainSupport {
-    pub capabilities: vk::SurfaceCapabilitiesKHR,
-    pub formats: Vec<vk::SurfaceFormatKHR>,
-    pub present_modes: Vec<vk::PresentModeKHR>,
+    pub capabilities: wgpu::SurfaceCapabilities,
+    pub formats: Vec<wgpu::TextureFormat>,
+    pub present_modes: Vec<wgpu::PresentMode>,
 }
 
 impl SwapchainSupport {
     pub unsafe fn get(
-        surface_loader: &Surface,
-        surface: vk::SurfaceKHR,
-        physical_device: vk::PhysicalDevice,
+        // surface_loader: &Surface,
+        surface: wgpu::Surface,
+        // physical_device: wgpu::lDevice,
+        adapter: &wgpu::Adapter,
     ) -> Result<Self> {
+        let caps = surface.get_capabilities(adapter);
+
         Ok(Self {
-            capabilities: surface_loader
-                .get_physical_device_surface_capabilities(physical_device, surface)?,
-            formats: surface_loader
-                .get_physical_device_surface_formats(physical_device, surface)?,
-            present_modes: surface_loader
-                .get_physical_device_surface_present_modes(physical_device, surface)?,
+            capabilities: caps,
+            // surface_loader
+            //     .get_physical_device_surface_capabilities(physical_device, surface)?,
+            formats: caps.formats,
+            // surface_loader
+            //     .get_physical_device_surface_formats(physical_device, surface)?,
+            present_modes: caps.present_modes,
+            // surface_loader
+            //     .get_physical_device_surface_present_modes(physical_device, surface)?,
         })
     }
 }
@@ -441,26 +447,27 @@ pub unsafe fn create_logical_device(
     ))
 }
 
-fn get_swapchain_surface_format(formats: &[vk::SurfaceFormatKHR]) -> vk::SurfaceFormatKHR {
+fn get_swapchain_surface_format(formats: &[wgpu::TextureFormat]) -> wgpu::TextureFormat {
     formats
         .iter()
         .cloned()
         .find(|f| {
-            f.format == vk::Format::B8G8R8A8_SRGB
-                && f.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
+            *f == wgpu::TextureFormat::Bgra8UnormSrgb
+            // f.format == vk::Format::B8G8R8A8_SRGB
+            //     && f.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
         })
         .unwrap_or_else(|| formats[0])
 }
 
-fn get_swapchain_present_mode(present_modes: &[vk::PresentModeKHR]) -> vk::PresentModeKHR {
+fn get_swapchain_present_mode(present_modes: &[wgpu::PresentMode]) -> wgpu::PresentMode {
     present_modes
         .iter()
         .cloned()
-        .find(|m| *m == vk::PresentModeKHR::MAILBOX)
-        .unwrap_or(vk::PresentModeKHR::FIFO)
+        .find(|m| *m == wgpu::PresentMode::Mailbox) //*m == vk::PresentModeKHR::MAILBOX)
+        .unwrap_or(wgpu::PresentMode::Fifo)
 }
 
-fn get_swapchain_extent(window: &Window, capabilities: vk::SurfaceCapabilitiesKHR) -> vk::Extent2D {
+fn get_swapchain_extent(window: &Window, capabilities: wgpu::SurfaceCapabilities) -> vk::Extent2D {
     if capabilities.current_extent.width != u32::MAX {
         capabilities.current_extent
     } else {
@@ -481,57 +488,59 @@ fn get_swapchain_extent(window: &Window, capabilities: vk::SurfaceCapabilitiesKH
     }
 }
 
-pub unsafe fn create_swapchain(
-    window: &Window,
-    instance: &ash::Instance,
-    logical_device: &ash::Device,
-    surface: vk::SurfaceKHR,
-    queue_family_indices: &QueueFamilyIndices,
-    swapchain_support: &SwapchainSupport,
-) -> Result<(
-    Swapchain,
-    vk::SwapchainKHR,
-    Vec<vk::Image>,
-    vk::Extent2D,
-    vk::Format,
-)> {
-    let surface_format = get_swapchain_surface_format(&swapchain_support.formats);
-    let present_mode = get_swapchain_present_mode(&swapchain_support.present_modes);
-    let extent = get_swapchain_extent(window, swapchain_support.capabilities);
+// pub unsafe fn create_swapchain(
+//     window: &Window,
+//     instance: &wgpu::Instance,
+//     logical_device: &wgpu::Device,
+//     surface: wgpu::Surface,
+//     // queue_family_indices: &QueueFamilyIndices,
+//     queue: &wgpu::Queue,
+//     swapchain_support: &SwapchainSupport,
+// ) -> Result<(
+//     Swapchain,
+//     vk::SwapchainKHR,
+//     Vec<vk::Image>,
+//     vk::Extent2D,
+//     vk::Format,
+// )> {
+//     let surface_format = get_swapchain_surface_format(&swapchain_support.formats);
+//     let present_mode = get_swapchain_present_mode(&swapchain_support.present_modes);
+//     let extent = window.inner_size();
 
-    let mut image_count = (swapchain_support.capabilities.min_image_count + 1).max(3);
-    if swapchain_support.capabilities.max_image_count != 0
-        && image_count > swapchain_support.capabilities.max_image_count
-    {
-        image_count = swapchain_support.capabilities.max_image_count;
-    }
+//     // let mut image_count = (swapchain_support.capabilities.min_image_count + 1).max(3);
+//     // if swapchain_support.capabilities.max_image_count != 0
+//     //     && image_count > swapchain_support.capabilities.max_image_count
+//     // {
+//     //     image_count = swapchain_support.capabilities.max_image_count;
+//     // }
+//     let image_count = 3;
 
-    let image_sharing_mode = vk::SharingMode::CONCURRENT;
+//     let image_sharing_mode = vk::SharingMode::CONCURRENT;
 
-    let indices = queue_family_indices.to_render_vec();
-    let swapchain_create_info = vk::SwapchainCreateInfoKHR::builder()
-        .surface(surface)
-        .min_image_count(image_count)
-        .image_format(surface_format.format)
-        .image_color_space(surface_format.color_space)
-        .image_extent(extent)
-        .image_array_layers(1)
-        .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
-        .image_sharing_mode(image_sharing_mode)
-        .queue_family_indices(&indices)
-        .pre_transform(swapchain_support.capabilities.current_transform)
-        .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-        .present_mode(present_mode)
-        .clipped(true)
-        .old_swapchain(vk::SwapchainKHR::null());
+//     let indices = queue_family_indices.to_render_vec();
+//     let swapchain_create_info = vk::SwapchainCreateInfoKHR::builder()
+//         .surface(surface)
+//         .min_image_count(image_count)
+//         .image_format(surface_format.format)
+//         .image_color_space(surface_format.color_space)
+//         .image_extent(extent)
+//         .image_array_layers(1)
+//         .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+//         .image_sharing_mode(image_sharing_mode)
+//         .queue_family_indices(&indices)
+//         .pre_transform(swapchain_support.capabilities.current_transform)
+//         .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+//         .present_mode(present_mode)
+//         .clipped(true)
+//         .old_swapchain(vk::SwapchainKHR::null());
 
-    let swapchain_loader = Swapchain::new(instance, logical_device);
-    let swapchain = swapchain_loader.create_swapchain(&swapchain_create_info, None)?;
-    let images = swapchain_loader.get_swapchain_images(swapchain)?;
-    let extent = swapchain_create_info.image_extent;
-    let format = swapchain_create_info.image_format;
-    Ok((swapchain_loader, swapchain, images, extent, format))
-}
+//     let swapchain_loader = Swapchain::new(instance, logical_device);
+//     let swapchain = swapchain_loader.create_swapchain(&swapchain_create_info, None)?;
+//     let images = swapchain_loader.get_swapchain_images(swapchain)?;
+//     let extent = swapchain_create_info.image_extent;
+//     let format = swapchain_create_info.image_format;
+//     Ok((swapchain_loader, swapchain, images, extent, format))
+// }
 
 pub unsafe fn create_swapchain_image_views(
     logical_device: &ash::Device,
@@ -565,103 +574,131 @@ pub unsafe fn create_shader_module(
         .map_err(|e| anyhow!("{}", e))
 }
 
-pub unsafe fn create_render_pass(
-    instance: &ash::Instance,
-    logical_device: &ash::Device,
-    physical_device: vk::PhysicalDevice,
-    swapchain: &g_objects::Swapchain,
-    msaa_samples: vk::SampleCountFlags,
-) -> Result<vk::RenderPass> {
-    let color_attachment = vk::AttachmentDescription::builder()
-        .format(swapchain.format)
-        .samples(msaa_samples)
-        .load_op(vk::AttachmentLoadOp::CLEAR)
-        .store_op(vk::AttachmentStoreOp::DONT_CARE)
-        .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
-        .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-        .initial_layout(vk::ImageLayout::UNDEFINED)
-        .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-        .build();
+pub unsafe fn create_render_pass_desciptor<'a>(
+    instance: &'a wgpu::Instance,
+    device: &'a wgpu::Device,
 
-    let depth_stencil_attachment = vk::AttachmentDescription::builder()
-        .format(get_depth_format(instance, physical_device)?)
-        .samples(msaa_samples)
-        .load_op(vk::AttachmentLoadOp::CLEAR)
-        .store_op(vk::AttachmentStoreOp::DONT_CARE)
-        .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
-        .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-        .initial_layout(vk::ImageLayout::UNDEFINED)
-        .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-        .build();
+    // swapchain: &g_objects::Swapchain,
+    msaa_sample_state: wgpu::MultisampleState,
+    view: &'a wgpu::TextureView,
+    encoder: &'a wgpu::CommandEncoder,
+) -> wgpu::RenderPassDescriptor<'a, 'a> {
+    // Result<vk::RenderPass> {
+    // let color_attachment = vk::AttachmentDescription::builder()
+    //     .format(swapchain.format)
+    //     .samples(msaa_samples)
+    //     .load_op(vk::AttachmentLoadOp::CLEAR)
+    //     .store_op(vk::AttachmentStoreOp::DONT_CARE)
+    //     .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+    //     .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+    //     .initial_layout(vk::ImageLayout::UNDEFINED)
+    //     .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+    //     .build();
 
-    let color_resolve_attachment = vk::AttachmentDescription::builder()
-        .format(swapchain.format)
-        .samples(vk::SampleCountFlags::TYPE_1)
-        .load_op(vk::AttachmentLoadOp::DONT_CARE)
-        .store_op(vk::AttachmentStoreOp::STORE)
-        .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
-        .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-        .initial_layout(vk::ImageLayout::UNDEFINED)
-        .final_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-        .build();
+    // let depth_stencil_attachment = vk::AttachmentDescription::builder()
+    //     .format(get_depth_format(instance, physical_device)?)
+    //     .samples(msaa_samples)
+    //     .load_op(vk::AttachmentLoadOp::CLEAR)
+    //     .store_op(vk::AttachmentStoreOp::DONT_CARE)
+    //     .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+    //     .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+    //     .initial_layout(vk::ImageLayout::UNDEFINED)
+    //     .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+    //     .build();
 
-    let color_attachment_ref = vk::AttachmentReference::builder()
-        .attachment(0)
-        .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-        .build();
+    // let color_resolve_attachment = vk::AttachmentDescription::builder()
+    //     .format(swapchain.format)
+    //     .samples(vk::SampleCountFlags::TYPE_1)
+    //     .load_op(vk::AttachmentLoadOp::DONT_CARE)
+    //     .store_op(vk::AttachmentStoreOp::STORE)
+    //     .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+    //     .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+    //     .initial_layout(vk::ImageLayout::UNDEFINED)
+    //     .final_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+    //     .build();
 
-    let depth_stencil_attachment_ref = vk::AttachmentReference::builder()
-        .attachment(1)
-        .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-        .build();
+    // let color_attachment_ref = vk::AttachmentReference::builder()
+    //     .attachment(0)
+    //     .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+    //     .build();
 
-    let color_resolve_attachment_ref = vk::AttachmentReference::builder()
-        .attachment(2)
-        .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-        .build();
+    // let depth_stencil_attachment_ref = vk::AttachmentReference::builder()
+    //     .attachment(1)
+    //     .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+    //     .build();
 
-    let color_attachments = &[color_attachment_ref];
-    let resolve_attachments = &[color_resolve_attachment_ref];
-    let subpass = vk::SubpassDescription::builder()
-        .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-        .color_attachments(color_attachments)
-        .depth_stencil_attachment(&depth_stencil_attachment_ref)
-        .resolve_attachments(resolve_attachments)
-        .build();
+    // let color_resolve_attachment_ref = vk::AttachmentReference::builder()
+    //     .attachment(2)
+    //     .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+    //     .build();
 
-    let dependency = vk::SubpassDependency::builder()
-        .src_subpass(vk::SUBPASS_EXTERNAL)
-        .dst_subpass(0)
-        .src_stage_mask(
-            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
-                | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
-        )
-        .src_access_mask(vk::AccessFlags::empty())
-        .dst_stage_mask(
-            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
-                | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
-        )
-        .dst_access_mask(
-            vk::AccessFlags::COLOR_ATTACHMENT_WRITE
-                | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
-        )
-        .build();
+    // let color_attachments = &[color_attachment_ref];
+    // let resolve_attachments = &[color_resolve_attachment_ref];
+    // let subpass = vk::SubpassDescription::builder()
+    //     .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+    //     .color_attachments(color_attachments)
+    //     .depth_stencil_attachment(&depth_stencil_attachment_ref)
+    //     .resolve_attachments(resolve_attachments)
+    //     .build();
 
-    let attachments = &[
-        color_attachment,
-        depth_stencil_attachment,
-        color_resolve_attachment,
-    ];
-    let subpasses = &[subpass];
-    let dependencies = &[dependency];
-    let info = vk::RenderPassCreateInfo::builder()
-        .attachments(attachments)
-        .subpasses(subpasses)
-        .dependencies(dependencies);
+    // let dependency = vk::SubpassDependency::builder()
+    //     .src_subpass(vk::SUBPASS_EXTERNAL)
+    //     .dst_subpass(0)
+    //     .src_stage_mask(
+    //         vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+    //             | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+    //     )
+    //     .src_access_mask(vk::AccessFlags::empty())
+    //     .dst_stage_mask(
+    //         vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+    //             | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+    //     )
+    //     .dst_access_mask(
+    //         vk::AccessFlags::COLOR_ATTACHMENT_WRITE
+    //             | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+    //     )
+    //     .build();
 
-    logical_device
-        .create_render_pass(&info, None)
-        .map_err(|e| anyhow!("{}", e))
+    // let attachments = &[
+    //     color_attachment,
+    //     depth_stencil_attachment,
+    //     color_resolve_attachment,
+    // ];
+    // let subpasses = &[subpass];
+    // let dependencies = &[dependency];
+    // let info = vk::RenderPassCreateInfo::builder()
+    //     .attachments(attachments)
+    //     .subpasses(subpasses)
+    //     .dependencies(dependencies);
+
+    // logical_device
+    //     .create_render_pass(&info, None)
+    //     .map_err(|e| anyhow!("{}", e))
+
+    let color_attachment = wgpu::RenderPassColorAttachment {
+        view,
+        resolve_target: Some(view),
+        ops: wgpu::Operations {
+            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+            store: wgpu::StoreOp::Discard,
+        },
+    };
+
+    let depth_stencil_attachment = wgpu::RenderPassDepthStencilAttachment {
+        view,
+        depth_ops: Some(wgpu::Operations {
+            load: wgpu::LoadOp::Clear(1.0),
+            store: wgpu::StoreOp::Store,
+        }),
+        stencil_ops: None,
+    };
+
+    wgpu::RenderPassDescriptor {
+        label: None,
+        color_attachments: &[Some(color_attachment)],
+        depth_stencil_attachment: None,
+        ..Default::default()
+    }
 }
 
 pub unsafe fn create_framebuffers(

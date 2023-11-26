@@ -19,4 +19,5 @@ layout(std140, binding = 2) buffer VertexSSBOOut {
 
 void main() {
    VertexesOut[gl_GlobalInvocationID.x] = VertexesIn[gl_GlobalInvocationID.x];
+   VertexesOut[gl_GlobalInvocationID.x].position -= vec3(0.0, 100.0, 0.0);
 }

@@ -674,7 +674,7 @@ impl Terrain {
         let mut rand = rand::thread_rng();
 
         let height_list = (0..10)
-            .map(|_| (0..5).map(|_| rand.gen_range(0.0..=1.)).collect::<Vec<_>>())
+            .map(|_| (0..5).map(|_| 1.).collect::<Vec<_>>())
             .collect::<Vec<_>>();
 
         let vertex_list = (0..10)
@@ -885,7 +885,21 @@ impl Terrain {
     pub unsafe fn create_descriptor_set_layout(
         logical_device: &ash::Device,
     ) -> Result<vk::DescriptorSetLayout> {
-        let bindings = &[];
+        let in_binding = vk::DescriptorSetLayoutBinding::builder()
+            .binding(1)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::COMPUTE)
+            .build();
+
+        let out_binding = vk::DescriptorSetLayoutBinding::builder()
+            .binding(2)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::COMPUTE)
+            .build();
+
+        let bindings = &[in_binding, out_binding];
         let info = vk::DescriptorSetLayoutCreateInfo::builder().bindings(bindings);
 
         logical_device
@@ -915,7 +929,17 @@ impl Terrain {
         logical_device: &ash::Device,
         swapchain_images_count: u32,
     ) -> Result<vk::DescriptorPool> {
-        let pool_sizes = &[];
+        let in_size = vk::DescriptorPoolSize::builder()
+            .ty(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(swapchain_images_count)
+            .build();
+
+        let out_size = vk::DescriptorPoolSize::builder()
+            .ty(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(swapchain_images_count)
+            .build();
+
+        let pool_sizes = &[in_size, out_size];
         let info = vk::DescriptorPoolCreateInfo::builder()
             .pool_sizes(pool_sizes)
             .max_sets(swapchain_images_count);
@@ -931,7 +955,36 @@ impl Terrain {
         // uniform_buffers: &[UniformBuffer],
     ) -> Result<()> {
         (0..swapchain_images_count).enumerate().for_each(|(i, _)| {
-            logical_device.update_descriptor_sets(&[], &[] as &[vk::CopyDescriptorSet]);
+            let in_info = vk::DescriptorBufferInfo::builder()
+                .buffer(self.compute_buffer.get_buffer())
+                .offset(0)
+                .range(vk::WHOLE_SIZE)
+                .build();
+
+            let out_info = vk::DescriptorBufferInfo::builder()
+                .buffer(self.compute_buffer.get_buffer())
+                .offset(0)
+                .range(vk::WHOLE_SIZE)
+                .build();
+
+            let in_write = vk::WriteDescriptorSet::builder()
+                .dst_set(self.descriptor_sets[i])
+                .dst_binding(1)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&[in_info])
+                .build();
+
+            let out_write = vk::WriteDescriptorSet::builder()
+                .dst_set(self.descriptor_sets[i])
+                .dst_binding(2)
+                .dst_array_element(0)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&[out_info])
+                .build();
+
+            logical_device
+                .update_descriptor_sets(&[in_write, out_write], &[] as &[vk::CopyDescriptorSet]);
         });
 
         Ok(())
@@ -1087,7 +1140,7 @@ impl Terrain {
             .attachments(attachments)
             .blend_constants([0.0, 0.0, 0.0, 0.0]);
 
-        let stages = &[vert_stage, frag_stage];
+        let stages = &[vert_stage, frag_stage, compute_stage];
         let info = vk::GraphicsPipelineCreateInfo::builder()
             .stages(stages)
             .vertex_input_state(&vertex_input_state)

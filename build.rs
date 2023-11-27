@@ -1,6 +1,7 @@
 use std::{collections::HashMap, env, path::Path};
 
-use glsl_to_spirv::ShaderType;
+// use glsl_to_spirv::ShaderType;
+use shaderc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=shaders");
@@ -18,7 +19,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if entry.file_type()?.is_file() {
             let in_path = entry.path();
 
-            // Support only vertex and fragment shaders currently
             let shader_type =
                 in_path
                     .extension()
@@ -28,9 +28,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .and_then(|stem| stem.to_str().and_then(|s| s.split('_').last()))
                         {
                             Some(shader_type) => match shader_type {
-                                "vert" => Some(ShaderType::Vertex),
-                                "frag" => Some(ShaderType::Fragment),
-                                "compute" => Some(ShaderType::Compute),
+                                "vert" => Some(shaderc::ShaderKind::Vertex),
+                                "frag" => Some(shaderc::ShaderKind::Fragment),
+                                "compute" => Some(shaderc::ShaderKind::Compute),
                                 _ => None,
                             },
                             _ => None,
@@ -39,14 +39,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     });
 
             if let Some(shader_type) = shader_type {
-                use std::io::Read;
-
                 let source = std::fs::read_to_string(&in_path)?;
-                let mut compiled_file = glsl_to_spirv::compile(&source, shader_type)?;
 
-                // Read the binary data from the compiled file
-                let mut compiled_bytes = Vec::new();
-                compiled_file.read_to_end(&mut compiled_bytes)?;
+                let compiler = shaderc::Compiler::new().unwrap();
+                let options = shaderc::CompileOptions::new().unwrap();
+
+                let binary_result = compiler.compile_into_spirv(
+                    &source,
+                    shader_type,
+                    in_path.to_str().unwrap(),
+                    "main",
+                    Some(&options),
+                )?;
 
                 // Determine the output path based on the input name
                 let out_path = format!(
@@ -55,7 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     in_path.file_stem().unwrap().to_string_lossy()
                 );
 
-                std::fs::write(&out_path, &compiled_bytes)?;
+                std::fs::write(&out_path, binary_result.as_binary_u8())?;
 
                 generated_files.insert(
                     in_path.file_stem().unwrap().to_string_lossy().to_string(),

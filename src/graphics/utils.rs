@@ -884,11 +884,12 @@ pub unsafe fn create_buffer(
     logical_device: &ash::Device,
     size: vk::DeviceSize,
     usage: vk::BufferUsageFlags,
+    sharing_mode: vk::SharingMode,
 ) -> Result<vk::Buffer> {
     let buffer_info = vk::BufferCreateInfo::builder()
         .size(size)
         .usage(usage)
-        .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        .sharing_mode(sharing_mode);
 
     logical_device
         .create_buffer(&buffer_info, None)
@@ -903,7 +904,7 @@ pub unsafe fn create_buffer_and_memory(
     usage: vk::BufferUsageFlags,
     properties: vk::MemoryPropertyFlags,
 ) -> Result<(vk::Buffer, vk::DeviceMemory, vk::MemoryRequirements)> {
-    let buffer = create_buffer(device, size, usage)?; //device.create_buffer(&buffer_info, None)?;
+    let buffer = create_buffer(device, size, usage, vk::SharingMode::EXCLUSIVE)?; //device.create_buffer(&buffer_info, None)?;
 
     let requirements = device.get_buffer_memory_requirements(buffer);
 

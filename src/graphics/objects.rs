@@ -31,7 +31,6 @@ use super::allocators::TextureMemoryAllocator;
 use super::types::AttributeDescriptions;
 use super::types::BindingDescription;
 
-use super::types::render_info;
 use super::types::Vertex;
 // use super::types::Vertex;
 use super::utils::IsNull;
@@ -346,6 +345,7 @@ impl InstanceBuffer {
                 logical_device,
                 self.size,
                 vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
+                vk::SharingMode::EXCLUSIVE,
             )?;
 
             self.reqs = Some(logical_device.get_buffer_memory_requirements(self.buffer));
@@ -367,7 +367,7 @@ pub struct VertexBuffer {
 
 impl VertexBuffer {
     pub unsafe fn create(vertices: &[g_types::Vertex]) -> Result<Self> {
-        let size = std::mem::size_of_val(vertices) as u64;
+        let size = std::mem::size_of::<g_types::Vertex>() as u64 * vertices.len() as u64;
 
         Ok(Self {
             buffer: vk::Buffer::null(),
@@ -397,6 +397,7 @@ impl VertexBuffer {
                 logical_device,
                 self.size,
                 vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::VERTEX_BUFFER,
+                vk::SharingMode::EXCLUSIVE,
             )?;
 
             self.reqs = Some(logical_device.get_buffer_memory_requirements(self.buffer));
@@ -454,6 +455,7 @@ impl UniformBuffer {
                 logical_device,
                 self.size,
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
+                vk::SharingMode::EXCLUSIVE,
             )?;
         }
 
@@ -473,7 +475,7 @@ pub struct IndexBuffer {
 
 impl IndexBuffer {
     pub unsafe fn create(indices: &[u32]) -> Result<Self> {
-        let size = std::mem::size_of_val(indices) as u64;
+        let size = std::mem::size_of::<u32>() as u64 * indices.len() as u64;
 
         Ok(Self {
             buffer: vk::Buffer::null(),
@@ -508,6 +510,7 @@ impl IndexBuffer {
                 logical_device,
                 self.size,
                 vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::INDEX_BUFFER,
+                vk::SharingMode::EXCLUSIVE,
             )?;
 
             self.reqs = Some(logical_device.get_buffer_memory_requirements(self.buffer));
@@ -527,10 +530,10 @@ pub struct ComputeBuffer<T> {
 
 impl<T: Clone> ComputeBuffer<T> {
     pub unsafe fn create(data: &[T]) -> Result<Self> {
-        let size = std::mem::size_of_val(data) as u64;
+        let size = std::mem::size_of::<T>() as u64 * data.len() as u64;
 
         Ok(Self {
-            data: data.to_vec(),
+            data: data.into(),
             buffer: vk::Buffer::null(),
             size,
             offset: None,
@@ -563,6 +566,7 @@ impl<T: Clone> ComputeBuffer<T> {
                 vk::BufferUsageFlags::TRANSFER_DST
                     | vk::BufferUsageFlags::VERTEX_BUFFER
                     | vk::BufferUsageFlags::STORAGE_BUFFER,
+                vk::SharingMode::EXCLUSIVE,
             )?;
 
             self.reqs = Some(logical_device.get_buffer_memory_requirements(self.buffer));
@@ -672,7 +676,8 @@ impl Texture {
 }
 
 pub struct Terrain {
-    pub compute_buffer: ComputeBuffer<Vertex>,
+    pub in_compute_buffer: ComputeBuffer<Vertex>,
+    // pub out_compute_buffer: ComputeBuffer<Vertex>,
     pub index_buffer: IndexBuffer,
     pub instance_buffer: InstanceBuffer,
     pub render_descriptor_pool: vk::DescriptorPool,
@@ -790,7 +795,8 @@ impl Terrain {
             indices.push(i as u32);
         }
 
-        let compute_buffer = ComputeBuffer::create(&vertices)?;
+        let in_compute_buffer = ComputeBuffer::create(&vertices)?;
+        // let out_compute_buffer = ComputeBuffer::create(&vertices)?;
 
         let index_buffer = IndexBuffer::create(&indices)?;
 
@@ -826,7 +832,8 @@ impl Terrain {
         let buffer_memory_allocator = BufferMemoryAllocator::create()?;
 
         Ok(Self {
-            compute_buffer,
+            in_compute_buffer,
+            // out_compute_buffer,
             index_buffer,
             instance_buffer,
             render_descriptor_pool,
@@ -845,7 +852,8 @@ impl Terrain {
     }
 
     pub unsafe fn create_buffers(&mut self, logical_device: &ash::Device) -> Result<()> {
-        self.compute_buffer.create_buffer(logical_device)?;
+        self.in_compute_buffer.create_buffer(logical_device)?;
+        // self.out_compute_buffer.create_buffer(logical_device)?;
         self.index_buffer.create_buffer(logical_device)?;
         self.instance_buffer.create_buffer(logical_device)?;
 
@@ -901,7 +909,7 @@ impl Terrain {
 
         logical_device.cmd_dispatch(
             command_buffer,
-            self.compute_buffer.data.len() as u32 / 256,
+            self.in_compute_buffer.data.len() as u32,
             1,
             1,
         );
@@ -925,7 +933,8 @@ impl Terrain {
             command_buffer,
             0,
             &[
-                self.compute_buffer.get_buffer(),
+                // self.out_compute_buffer.get_buffer(),
+                self.in_compute_buffer.get_buffer(),
                 self.instance_buffer.get_buffer(),
             ],
             &[0, 0],
@@ -1027,16 +1036,6 @@ impl Terrain {
         logical_device: &ash::Device,
         swapchain_images_count: u32,
     ) -> Result<vk::DescriptorPool> {
-        // let in_size = vk::DescriptorPoolSize::builder()
-        //     .ty(vk::DescriptorType::STORAGE_BUFFER)
-        //     .descriptor_count(swapchain_images_count)
-        //     .build();
-
-        // let out_size = vk::DescriptorPoolSize::builder()
-        //     .ty(vk::DescriptorType::STORAGE_BUFFER)
-        //     .descriptor_count(swapchain_images_count)
-        //     .build();
-
         let pool_sizes = &[];
         let info = vk::DescriptorPoolCreateInfo::builder()
             .pool_sizes(pool_sizes)
@@ -1078,36 +1077,6 @@ impl Terrain {
         // uniform_buffers: &[UniformBuffer],
     ) -> Result<()> {
         (0..swapchain_images_count).enumerate().for_each(|(i, _)| {
-            // let in_info = vk::DescriptorBufferInfo::builder()
-            //     .buffer(self.compute_buffer.get_buffer())
-            //     .offset(0)
-            //     .range(vk::WHOLE_SIZE)
-            //     .build();
-
-            // let out_info = vk::DescriptorBufferInfo::builder()
-            //     .buffer(self.compute_buffer.get_buffer())
-            //     .offset(0)
-            //     .range(vk::WHOLE_SIZE)
-            //     .build();
-
-            // let in_write = vk::WriteDescriptorSet::builder()
-            //     .dst_set(self.descriptor_sets[i])
-            //     .dst_binding(0)
-            //     .dst_array_element(0)
-            //     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-            //     .buffer_info(&[in_info])
-            //     .build();
-
-            // let out_write = vk::WriteDescriptorSet::builder()
-            //     .dst_set(self.descriptor_sets[i])
-            //     .dst_binding(1)
-            //     .dst_array_element(0)
-            //     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-            //     .buffer_info(&[out_info])
-            //     .build();
-
-            // logical_device
-            //     .update_descriptor_sets(&[in_write, out_write], &[] as &[vk::CopyDescriptorSet]);
             logical_device.update_descriptor_sets(&[], &[] as &[vk::CopyDescriptorSet]);
         });
 
@@ -1122,13 +1091,13 @@ impl Terrain {
     ) -> Result<()> {
         (0..swapchain_images_count).enumerate().for_each(|(i, _)| {
             let in_info = vk::DescriptorBufferInfo::builder()
-                .buffer(self.compute_buffer.get_buffer())
+                .buffer(self.in_compute_buffer.get_buffer())
                 .offset(0)
                 .range(vk::WHOLE_SIZE)
                 .build();
 
             // let out_info = vk::DescriptorBufferInfo::builder()
-            //     .buffer(self.compute_buffer.get_buffer())
+            //     .buffer(self.out_compute_buffer.get_buffer())
             //     .offset(0)
             //     .range(vk::WHOLE_SIZE)
             //     .build();
@@ -1360,7 +1329,8 @@ impl Terrain {
     }
 
     pub unsafe fn destroy(&mut self, logical_device: &ash::Device) {
-        self.compute_buffer.destroy(logical_device);
+        self.in_compute_buffer.destroy(logical_device);
+        // self.out_compute_buffer.destroy(logical_device);
         self.index_buffer.destroy(logical_device);
         self.instance_buffer.destroy(logical_device);
         self.buffer_memory_allocator.destroy(logical_device);

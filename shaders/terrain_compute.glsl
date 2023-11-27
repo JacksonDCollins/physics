@@ -1,5 +1,5 @@
 #version 450
-// #extension GL_EXT_debug_printf : enable
+#extension GL_EXT_debug_printf : enable
 
 struct Vertex {
   vec3 position;
@@ -7,7 +7,7 @@ struct Vertex {
   vec2 texcoord;
 };
 
-layout(std140, binding = 0) buffer VertexSSBOIn {
+layout( binding = 0) buffer VertexSSBOIn {
    Vertex VertexesIn[ ];
 };
 
@@ -15,14 +15,34 @@ layout(std140, binding = 0) buffer VertexSSBOIn {
 //    Vertex VertexesOut[ ];
 // };
 
-layout (local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+layout (local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 
 void main() {
    uint index = gl_GlobalInvocationID.x;  
 
-   // VertexesOut[gl_GlobalInvocationID.x] = VertexesIn[gl_GlobalInvocationID.x];
-   Vertex vertex = VertexesIn[index];
-   vertex.position = vec3(0.0, 100.0, 0.0);
+   // debugPrintfEXT("index = %d\n", index);
 
-   // printf("My float is %f", vertex.position.x);
+
+   // debugPrintfEXT("leng = %d\n", VertexesIn.length());
+
+
+   
+   // Vertex vertexIn = VertexesIn[index];
+   // vertexIn.position += vec3(0.0, 0.0, 1.0);
+
+   // VertexesOut[index] = vertexIn;
+   // VertexesOut[index].position += vec3(0.0, 0.0, 0.0001);
+
+
+   for(int i=0;i<8;++i)
+   {
+      VertexesIn[i].position += vec3(0.0001, 0.0001, 0.0001);
+      // VertexesIn[i].normal += vec3(0.1, 0.1, 0.1);
+      // VertexesIn[i].texcoord += vec2(0.1, 0.1);
+   }
+   
+
+
+
+   // debugPrintfEXT("vertex.position = %f %f %f\n", vertex.position.x, vertex.position.y, vertex.position.z);
 }

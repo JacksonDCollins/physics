@@ -111,9 +111,10 @@ impl App {
         scene.terrain.create_buffers(&logical_device)?;
 
         let mut acc = 0;
-        acc = g_utils::align_up(acc, scene.terrain.compute_buffer.reqs.unwrap().alignment);
-        scene.terrain.compute_buffer.offset = Some(acc);
-        acc += scene.terrain.compute_buffer.get_required_size();
+
+        acc = g_utils::align_up(acc, scene.terrain.in_compute_buffer.reqs.unwrap().alignment);
+        scene.terrain.in_compute_buffer.offset = Some(acc);
+        acc += scene.terrain.in_compute_buffer.get_required_size();
 
         acc = g_utils::align_up(acc, scene.terrain.index_buffer.reqs.unwrap().alignment);
         scene.terrain.index_buffer.offset = Some(acc);
@@ -133,15 +134,26 @@ impl App {
         )?;
 
         g_utils::memcpy(
-            scene.terrain.compute_buffer.data.as_ptr(),
+            scene.terrain.in_compute_buffer.data.as_ptr(),
             scene
                 .terrain
                 .buffer_memory_allocator
                 .stage_memory_ptr
-                .add(scene.terrain.compute_buffer.offset.unwrap() as usize)
+                .add(scene.terrain.in_compute_buffer.offset.unwrap() as usize)
                 .cast(),
-            scene.terrain.compute_buffer.data.len(),
+            scene.terrain.in_compute_buffer.data.len(),
         );
+
+        // g_utils::memcpy(
+        //     scene.terrain.out_compute_buffer.data.as_ptr(),
+        //     scene
+        //         .terrain
+        //         .buffer_memory_allocator
+        //         .stage_memory_ptr
+        //         .add(scene.terrain.out_compute_buffer.offset.unwrap() as usize)
+        //         .cast(),
+        //     scene.terrain.out_compute_buffer.data.len(),
+        // );
 
         g_utils::memcpy(
             scene.terrain.index_buffer.indices.as_ptr(),
@@ -177,10 +189,16 @@ impl App {
         )?;
 
         logical_device.bind_buffer_memory(
-            scene.terrain.compute_buffer.buffer,
+            scene.terrain.in_compute_buffer.buffer,
             scene.terrain.buffer_memory_allocator.vertex_index_memory,
-            scene.terrain.compute_buffer.offset.unwrap(),
+            scene.terrain.in_compute_buffer.offset.unwrap(),
         )?;
+
+        // logical_device.bind_buffer_memory(
+        //     scene.terrain.out_compute_buffer.buffer,
+        //     scene.terrain.buffer_memory_allocator.vertex_index_memory,
+        //     scene.terrain.out_compute_buffer.offset.unwrap(),
+        // )?;
 
         logical_device.bind_buffer_memory(
             scene.terrain.index_buffer.buffer,

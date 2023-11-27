@@ -1,4 +1,7 @@
 #version 450
+#extension GL_EXT_debug_printf : enable
+
+
 layout(push_constant) uniform PushConstants {
     layout(offset = 0) mat4 view;
     layout(offset = 64) mat4 proj;
@@ -13,10 +16,13 @@ layout(location = 3) in mat4 model;
 layout(location = 0) out vec3 fragNormal;
 layout(location = 1) out vec2 fragTexCoord;
 
+
+
 void main () {
 
     gl_Position = pcs.proj * pcs.view * model *  vec4(inPosition.xy, inPosition.z + 10.0, 1.0);
     fragNormal = inNormal;
     fragTexCoord = inTexCoord;
 
+    
 }

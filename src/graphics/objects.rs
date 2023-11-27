@@ -123,12 +123,16 @@ pub struct Presenter {
     color_image_memory: vk::DeviceMemory,
     color_image_view: vk::ImageView,
     pub framebuffers: Vec<vk::Framebuffer>,
-    pub command_buffers: Vec<vk::CommandBuffer>,
-    pub secondary_command_buffers: Vec<Vec<vk::CommandBuffer>>,
+    pub draw_command_buffers: Vec<vk::CommandBuffer>,
+    pub secondary_draw_command_buffers: Vec<Vec<vk::CommandBuffer>>,
+    pub compute_command_buffers: Vec<vk::CommandBuffer>,
     pub image_available_semaphores: Vec<vk::Semaphore>,
     pub render_finished_semaphores: Vec<vk::Semaphore>,
-    pub in_flight_fences: Vec<vk::Fence>,
-    pub images_in_flight: Vec<vk::Fence>,
+    pub compute_finished_semaphores: Vec<vk::Semaphore>,
+    pub render_in_flight_fences: Vec<vk::Fence>,
+    pub compute_in_flight_fences: Vec<vk::Fence>,
+    pub render_images_in_flight: Vec<vk::Fence>,
+    pub compute_images_in_flight: Vec<vk::Fence>,
 }
 
 impl Presenter {
@@ -208,11 +212,20 @@ impl Presenter {
 
         let secondary_command_buffers = vec![vec![]; swapchain.images.len()];
 
+        let compute_command_buffers = g_utils::create_compute_command_buffers(
+            logical_device,
+            &command_pool_sets,
+            swapchain.images.len(),
+        )?;
+
         let (
             image_available_semaphores,
             render_finished_semaphores,
-            in_flight_fences,
-            images_in_flight,
+            render_in_flight_fences,
+            compute_finished_semaphores,
+            compute_in_flight_fences,
+            render_images_in_flight,
+            compute_images_in_flight,
         ) = g_utils::create_sync_objects(logical_device, swapchain.images.len())?;
 
         Ok(Self {
@@ -225,23 +238,33 @@ impl Presenter {
             color_image,
             color_image_memory,
             color_image_view,
-            command_buffers,
-            secondary_command_buffers,
+            draw_command_buffers: command_buffers,
+            secondary_draw_command_buffers: secondary_command_buffers,
+            compute_command_buffers,
             image_available_semaphores,
             render_finished_semaphores,
-            in_flight_fences,
-            images_in_flight,
+            compute_finished_semaphores,
+            render_in_flight_fences,
+            compute_in_flight_fences,
+            render_images_in_flight,
+            compute_images_in_flight,
         })
     }
 
     pub unsafe fn destroy(&self, logical_device: &ash::Device) {
-        self.in_flight_fences
+        self.render_in_flight_fences
+            .iter()
+            .for_each(|fence| logical_device.destroy_fence(*fence, None));
+        self.compute_in_flight_fences
             .iter()
             .for_each(|fence| logical_device.destroy_fence(*fence, None));
         self.image_available_semaphores
             .iter()
             .for_each(|semaphore| logical_device.destroy_semaphore(*semaphore, None));
         self.render_finished_semaphores
+            .iter()
+            .for_each(|semaphore| logical_device.destroy_semaphore(*semaphore, None));
+        self.compute_finished_semaphores
             .iter()
             .for_each(|semaphore| logical_device.destroy_semaphore(*semaphore, None));
         self.command_pool_sets.iter().for_each(|pool_set| {
@@ -652,11 +675,16 @@ pub struct Terrain {
     pub compute_buffer: ComputeBuffer<Vertex>,
     pub index_buffer: IndexBuffer,
     pub instance_buffer: InstanceBuffer,
-    pub descriptor_set_layout: vk::DescriptorSetLayout,
-    pub pipeline_layout: vk::PipelineLayout,
-    pub pipeline: vk::Pipeline,
-    pub descriptor_pool: vk::DescriptorPool,
-    pub descriptor_sets: Vec<vk::DescriptorSet>,
+    pub render_descriptor_pool: vk::DescriptorPool,
+    pub compute_descriptor_pool: vk::DescriptorPool,
+    pub render_descriptor_set_layout: vk::DescriptorSetLayout,
+    pub render_pipeline_layout: vk::PipelineLayout,
+    pub render_pipeline: vk::Pipeline,
+    pub render_descriptor_sets: Vec<vk::DescriptorSet>,
+    pub compute_descriptor_set_layout: vk::DescriptorSetLayout,
+    pub compute_pipeline_layout: vk::PipelineLayout,
+    pub compute_pipeline: vk::Pipeline,
+    pub compute_descriptor_sets: Vec<vk::DescriptorSet>,
     pub render_info: g_types::RenderInfo,
     pub buffer_memory_allocator: BufferMemoryAllocator,
 }
@@ -673,13 +701,15 @@ impl Terrain {
 
         let mut rand = rand::thread_rng();
 
-        let height_list = (0..10)
-            .map(|_| (0..5).map(|_| 1.).collect::<Vec<_>>())
+        let width = 2;
+        let length = 1;
+        let height_list = (0..width)
+            .map(|_| (0..length).map(|_| 1.).collect::<Vec<_>>())
             .collect::<Vec<_>>();
 
-        let vertex_list = (0..10)
+        let vertex_list = (0..width)
             .flat_map(|i| {
-                (0..5).map(move |j| (j, i)).flat_map(|(j, i)| {
+                (0..length).map(move |j| (j, i)).flat_map(|(j, i)| {
                     vec![
                         Vertex::new(
                             g_types::vec3(
@@ -772,14 +802,26 @@ impl Terrain {
             &render_info,
         )?;
 
-        let descriptor_set_layout = Self::create_descriptor_set_layout(logical_device)?;
+        let render_descriptor_set_layout =
+            Self::create_render_descriptor_set_layout(logical_device)?;
 
-        let pipeline_layout = Self::create_pipeline_layout(logical_device, descriptor_set_layout)?;
+        let render_pipeline_layout =
+            Self::create_render_pipeline_layout(logical_device, render_descriptor_set_layout)?;
 
-        let pipeline = vk::Pipeline::null();
+        let render_pipeline = vk::Pipeline::null();
 
-        let descriptor_pool = vk::DescriptorPool::null();
-        let descriptor_sets = Vec::new();
+        let compute_descriptor_set_layout =
+            Self::create_compute_descriptor_set_layout(logical_device)?;
+
+        let compute_pipeline_layout =
+            Self::create_compute_pipeline_layout(logical_device, compute_descriptor_set_layout)?;
+
+        let compute_pipeline = vk::Pipeline::null();
+
+        let render_descriptor_pool = vk::DescriptorPool::null();
+        let compute_descriptor_pool = vk::DescriptorPool::null();
+        let render_descriptor_sets = Vec::new();
+        let compute_descriptor_sets = Vec::new();
 
         let buffer_memory_allocator = BufferMemoryAllocator::create()?;
 
@@ -787,11 +829,16 @@ impl Terrain {
             compute_buffer,
             index_buffer,
             instance_buffer,
-            descriptor_set_layout,
-            pipeline_layout,
-            pipeline,
-            descriptor_pool,
-            descriptor_sets,
+            render_descriptor_pool,
+            compute_descriptor_pool,
+            render_descriptor_set_layout,
+            render_pipeline_layout,
+            render_pipeline,
+            render_descriptor_sets,
+            compute_descriptor_set_layout,
+            compute_pipeline_layout,
+            compute_pipeline,
+            compute_descriptor_sets,
             render_info,
             buffer_memory_allocator,
         })
@@ -824,10 +871,39 @@ impl Terrain {
 
         logical_device.cmd_push_constants(
             command_buffer,
-            self.pipeline_layout,
+            self.render_pipeline_layout,
             vk::ShaderStageFlags::VERTEX,
             0,
             &[view_bytes, proj_bytes].concat(),
+        );
+    }
+
+    pub unsafe fn update(
+        &self,
+        logical_device: &ash::Device,
+        command_buffer: vk::CommandBuffer,
+        image_index: usize,
+    ) {
+        logical_device.cmd_bind_pipeline(
+            command_buffer,
+            vk::PipelineBindPoint::COMPUTE,
+            self.compute_pipeline,
+        );
+
+        logical_device.cmd_bind_descriptor_sets(
+            command_buffer,
+            vk::PipelineBindPoint::COMPUTE,
+            self.compute_pipeline_layout,
+            0,
+            &[self.compute_descriptor_sets[image_index]],
+            &[],
+        );
+
+        logical_device.cmd_dispatch(
+            command_buffer,
+            self.compute_buffer.data.len() as u32 / 256,
+            1,
+            1,
         );
     }
 
@@ -842,7 +918,7 @@ impl Terrain {
         logical_device.cmd_bind_pipeline(
             command_buffer,
             vk::PipelineBindPoint::GRAPHICS,
-            self.pipeline,
+            self.render_pipeline,
         );
 
         logical_device.cmd_bind_vertex_buffers(
@@ -865,9 +941,9 @@ impl Terrain {
         logical_device.cmd_bind_descriptor_sets(
             command_buffer,
             vk::PipelineBindPoint::GRAPHICS,
-            self.pipeline_layout,
+            self.render_pipeline_layout,
             0,
-            &[self.descriptor_sets[image_index]],
+            &[self.render_descriptor_sets[image_index]],
             &[],
         );
 
@@ -882,24 +958,36 @@ impl Terrain {
             0,
         );
     }
-    pub unsafe fn create_descriptor_set_layout(
+
+    pub unsafe fn create_compute_descriptor_set_layout(
         logical_device: &ash::Device,
     ) -> Result<vk::DescriptorSetLayout> {
         let in_binding = vk::DescriptorSetLayoutBinding::builder()
-            .binding(1)
+            .binding(0)
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::COMPUTE)
             .build();
 
-        let out_binding = vk::DescriptorSetLayoutBinding::builder()
-            .binding(2)
-            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::COMPUTE)
-            .build();
+        // let out_binding = vk::DescriptorSetLayoutBinding::builder()
+        //     .binding(1)
+        //     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+        //     .descriptor_count(1)
+        //     .stage_flags(vk::ShaderStageFlags::COMPUTE)
+        //     .build();
 
-        let bindings = &[in_binding, out_binding];
+        let bindings = &[in_binding];
+        let info = vk::DescriptorSetLayoutCreateInfo::builder().bindings(bindings);
+
+        logical_device
+            .create_descriptor_set_layout(&info, None)
+            .map_err(|e| anyhow!("{}", e))
+    }
+
+    pub unsafe fn create_render_descriptor_set_layout(
+        logical_device: &ash::Device,
+    ) -> Result<vk::DescriptorSetLayout> {
+        let bindings = &[];
         let info = vk::DescriptorSetLayoutCreateInfo::builder().bindings(bindings);
 
         logical_device
@@ -912,34 +1000,44 @@ impl Terrain {
         logical_device: &ash::Device,
         swapchain_images_count: usize,
     ) -> Result<()> {
-        self.descriptor_pool =
-            Self::create_descriptor_pool(logical_device, swapchain_images_count as u32)?;
+        self.render_descriptor_pool =
+            Self::create_render_descriptor_pool(logical_device, swapchain_images_count as u32)?;
 
-        self.descriptor_sets = g_utils::create_descriptor_sets(
+        self.render_descriptor_sets = g_utils::create_descriptor_sets(
             logical_device,
-            self.descriptor_set_layout,
-            self.descriptor_pool,
+            self.render_descriptor_set_layout,
+            self.render_descriptor_pool,
+            swapchain_images_count,
+        )?;
+
+        self.compute_descriptor_pool =
+            Self::create_compute_descriptor_pool(logical_device, swapchain_images_count as u32)?;
+
+        self.compute_descriptor_sets = g_utils::create_descriptor_sets(
+            logical_device,
+            self.compute_descriptor_set_layout,
+            self.compute_descriptor_pool,
             swapchain_images_count,
         )?;
 
         Ok(())
     }
 
-    pub unsafe fn create_descriptor_pool(
+    pub unsafe fn create_render_descriptor_pool(
         logical_device: &ash::Device,
         swapchain_images_count: u32,
     ) -> Result<vk::DescriptorPool> {
-        let in_size = vk::DescriptorPoolSize::builder()
-            .ty(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(swapchain_images_count)
-            .build();
+        // let in_size = vk::DescriptorPoolSize::builder()
+        //     .ty(vk::DescriptorType::STORAGE_BUFFER)
+        //     .descriptor_count(swapchain_images_count)
+        //     .build();
 
-        let out_size = vk::DescriptorPoolSize::builder()
-            .ty(vk::DescriptorType::STORAGE_BUFFER)
-            .descriptor_count(swapchain_images_count)
-            .build();
+        // let out_size = vk::DescriptorPoolSize::builder()
+        //     .ty(vk::DescriptorType::STORAGE_BUFFER)
+        //     .descriptor_count(swapchain_images_count)
+        //     .build();
 
-        let pool_sizes = &[in_size, out_size];
+        let pool_sizes = &[];
         let info = vk::DescriptorPoolCreateInfo::builder()
             .pool_sizes(pool_sizes)
             .max_sets(swapchain_images_count);
@@ -948,7 +1046,75 @@ impl Terrain {
             .create_descriptor_pool(&info, None)
             .map_err(|e| anyhow!("{}", e))
     }
-    pub unsafe fn update_descriptor_sets(
+
+    pub unsafe fn create_compute_descriptor_pool(
+        logical_device: &ash::Device,
+        swapchain_images_count: u32,
+    ) -> Result<vk::DescriptorPool> {
+        let in_size = vk::DescriptorPoolSize::builder()
+            .ty(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(swapchain_images_count)
+            .build();
+
+        // let out_size = vk::DescriptorPoolSize::builder()
+        //     .ty(vk::DescriptorType::STORAGE_BUFFER)
+        //     .descriptor_count(swapchain_images_count)
+        //     .build();
+
+        let pool_sizes = &[in_size];
+        let info = vk::DescriptorPoolCreateInfo::builder()
+            .pool_sizes(pool_sizes)
+            .max_sets(swapchain_images_count);
+
+        logical_device
+            .create_descriptor_pool(&info, None)
+            .map_err(|e| anyhow!("{}", e))
+    }
+
+    pub unsafe fn update_render_descriptor_sets(
+        &mut self,
+        logical_device: &ash::Device,
+        swapchain_images_count: usize,
+        // uniform_buffers: &[UniformBuffer],
+    ) -> Result<()> {
+        (0..swapchain_images_count).enumerate().for_each(|(i, _)| {
+            // let in_info = vk::DescriptorBufferInfo::builder()
+            //     .buffer(self.compute_buffer.get_buffer())
+            //     .offset(0)
+            //     .range(vk::WHOLE_SIZE)
+            //     .build();
+
+            // let out_info = vk::DescriptorBufferInfo::builder()
+            //     .buffer(self.compute_buffer.get_buffer())
+            //     .offset(0)
+            //     .range(vk::WHOLE_SIZE)
+            //     .build();
+
+            // let in_write = vk::WriteDescriptorSet::builder()
+            //     .dst_set(self.descriptor_sets[i])
+            //     .dst_binding(0)
+            //     .dst_array_element(0)
+            //     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            //     .buffer_info(&[in_info])
+            //     .build();
+
+            // let out_write = vk::WriteDescriptorSet::builder()
+            //     .dst_set(self.descriptor_sets[i])
+            //     .dst_binding(1)
+            //     .dst_array_element(0)
+            //     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            //     .buffer_info(&[out_info])
+            //     .build();
+
+            // logical_device
+            //     .update_descriptor_sets(&[in_write, out_write], &[] as &[vk::CopyDescriptorSet]);
+            logical_device.update_descriptor_sets(&[], &[] as &[vk::CopyDescriptorSet]);
+        });
+
+        Ok(())
+    }
+
+    pub unsafe fn update_compute_descriptor_sets(
         &mut self,
         logical_device: &ash::Device,
         swapchain_images_count: usize,
@@ -961,36 +1127,47 @@ impl Terrain {
                 .range(vk::WHOLE_SIZE)
                 .build();
 
-            let out_info = vk::DescriptorBufferInfo::builder()
-                .buffer(self.compute_buffer.get_buffer())
-                .offset(0)
-                .range(vk::WHOLE_SIZE)
-                .build();
+            // let out_info = vk::DescriptorBufferInfo::builder()
+            //     .buffer(self.compute_buffer.get_buffer())
+            //     .offset(0)
+            //     .range(vk::WHOLE_SIZE)
+            //     .build();
 
             let in_write = vk::WriteDescriptorSet::builder()
-                .dst_set(self.descriptor_sets[i])
-                .dst_binding(1)
+                .dst_set(self.compute_descriptor_sets[i])
+                .dst_binding(0)
                 .dst_array_element(0)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .buffer_info(&[in_info])
                 .build();
 
-            let out_write = vk::WriteDescriptorSet::builder()
-                .dst_set(self.descriptor_sets[i])
-                .dst_binding(2)
-                .dst_array_element(0)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .buffer_info(&[out_info])
-                .build();
+            // let out_write = vk::WriteDescriptorSet::builder()
+            //     .dst_set(self.compute_descriptor_sets[i])
+            //     .dst_binding(1)
+            //     .dst_array_element(0)
+            //     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            //     .buffer_info(&[out_info])
+            //     .build();
 
-            logical_device
-                .update_descriptor_sets(&[in_write, out_write], &[] as &[vk::CopyDescriptorSet]);
+            logical_device.update_descriptor_sets(&[in_write], &[] as &[vk::CopyDescriptorSet]);
         });
 
         Ok(())
     }
 
-    pub unsafe fn create_pipeline_layout(
+    pub unsafe fn create_compute_pipeline_layout(
+        logical_device: &ash::Device,
+        descriptor_set_layout: vk::DescriptorSetLayout,
+    ) -> Result<vk::PipelineLayout> {
+        let set_layouts = &[descriptor_set_layout];
+
+        let layout_info = vk::PipelineLayoutCreateInfo::builder().set_layouts(set_layouts);
+        logical_device
+            .create_pipeline_layout(&layout_info, None)
+            .map_err(|e| anyhow!("{}", e))
+    }
+
+    pub unsafe fn create_render_pipeline_layout(
         logical_device: &ash::Device,
         descriptor_set_layout: vk::DescriptorSetLayout,
     ) -> Result<vk::PipelineLayout> {
@@ -1016,7 +1193,34 @@ impl Terrain {
             .map_err(|e| anyhow!("{}", e))
     }
 
-    pub unsafe fn create_pipeline(
+    pub unsafe fn create_compute_pipeline(&mut self, logical_device: &ash::Device) -> Result<()> {
+        let compute_code = read_spv(&mut fs::File::open(
+            SHADER_FILES.get("terrain_compute").unwrap(),
+        )?)?;
+
+        let compute_shader_module = g_utils::create_shader_module(logical_device, &compute_code)?;
+
+        let compute_stage = vk::PipelineShaderStageCreateInfo::builder()
+            .stage(vk::ShaderStageFlags::COMPUTE)
+            .module(compute_shader_module)
+            .name(CStr::from_bytes_with_nul_unchecked(b"main\0"))
+            .build();
+
+        let pipeline_info = vk::ComputePipelineCreateInfo::builder()
+            .stage(compute_stage)
+            .layout(self.compute_pipeline_layout)
+            .build();
+
+        self.compute_pipeline = logical_device
+            .create_compute_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
+            .map_err(|e| anyhow!("{}", e.1))?[0];
+
+        logical_device.destroy_shader_module(compute_shader_module, None);
+
+        Ok(())
+    }
+
+    pub unsafe fn create_render_pipeline(
         &mut self,
         logical_device: &ash::Device,
         msaa_samples: vk::SampleCountFlags,
@@ -1029,13 +1233,9 @@ impl Terrain {
         let frag_code = read_spv(&mut fs::File::open(
             SHADER_FILES.get("terrain_frag").unwrap(),
         )?)?;
-        let compute_code = read_spv(&mut fs::File::open(
-            SHADER_FILES.get("terrain_compute").unwrap(),
-        )?)?;
 
         let vert_shader_module = g_utils::create_shader_module(logical_device, &vert_code)?;
         let frag_shader_module = g_utils::create_shader_module(logical_device, &frag_code)?;
-        let compute_shader_module = g_utils::create_shader_module(logical_device, &compute_code)?;
 
         let vert_stage = vk::PipelineShaderStageCreateInfo::builder()
             .stage(vk::ShaderStageFlags::VERTEX)
@@ -1046,12 +1246,6 @@ impl Terrain {
         let frag_stage = vk::PipelineShaderStageCreateInfo::builder()
             .stage(vk::ShaderStageFlags::FRAGMENT)
             .module(frag_shader_module)
-            .name(CStr::from_bytes_with_nul_unchecked(b"main\0"))
-            .build();
-
-        let compute_stage = vk::PipelineShaderStageCreateInfo::builder()
-            .stage(vk::ShaderStageFlags::COMPUTE)
-            .module(compute_shader_module)
             .name(CStr::from_bytes_with_nul_unchecked(b"main\0"))
             .build();
 
@@ -1140,7 +1334,7 @@ impl Terrain {
             .attachments(attachments)
             .blend_constants([0.0, 0.0, 0.0, 0.0]);
 
-        let stages = &[vert_stage, frag_stage, compute_stage];
+        let stages = &[vert_stage, frag_stage];
         let info = vk::GraphicsPipelineCreateInfo::builder()
             .stages(stages)
             .vertex_input_state(&vertex_input_state)
@@ -1150,12 +1344,12 @@ impl Terrain {
             .multisample_state(&multisample_state)
             .depth_stencil_state(&depth_stencil_state)
             .color_blend_state(&color_blend_state)
-            .layout(self.pipeline_layout)
+            .layout(self.render_pipeline_layout)
             .render_pass(render_pass)
             .subpass(0)
             .build();
 
-        self.pipeline = logical_device
+        self.render_pipeline = logical_device
             .create_graphics_pipelines(vk::PipelineCache::null(), &[info], None)
             .map_err(|e| anyhow!("{}", e.1))?[0];
 
@@ -1170,10 +1364,14 @@ impl Terrain {
         self.index_buffer.destroy(logical_device);
         self.instance_buffer.destroy(logical_device);
         self.buffer_memory_allocator.destroy(logical_device);
-        logical_device.destroy_descriptor_pool(self.descriptor_pool, None);
-        logical_device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
-        logical_device.destroy_pipeline(self.pipeline, None);
-        logical_device.destroy_pipeline_layout(self.pipeline_layout, None);
+        logical_device.destroy_descriptor_pool(self.render_descriptor_pool, None);
+        logical_device.destroy_descriptor_pool(self.compute_descriptor_pool, None);
+        logical_device.destroy_descriptor_set_layout(self.render_descriptor_set_layout, None);
+        logical_device.destroy_pipeline(self.render_pipeline, None);
+        logical_device.destroy_pipeline_layout(self.render_pipeline_layout, None);
+        logical_device.destroy_descriptor_set_layout(self.compute_descriptor_set_layout, None);
+        logical_device.destroy_pipeline(self.compute_pipeline, None);
+        logical_device.destroy_pipeline_layout(self.compute_pipeline_layout, None);
     }
 }
 
@@ -1313,17 +1511,17 @@ impl Model {
         logical_device: &ash::Device,
         swapchain_images_count: u32,
     ) -> Result<vk::DescriptorPool> {
-        let ubo_size = vk::DescriptorPoolSize::builder()
-            .ty(vk::DescriptorType::UNIFORM_BUFFER)
-            .descriptor_count(swapchain_images_count)
-            .build();
+        // let ubo_size = vk::DescriptorPoolSize::builder()
+        //     .ty(vk::DescriptorType::UNIFORM_BUFFER)
+        //     .descriptor_count(swapchain_images_count)
+        //     .build();
 
         let sampler_size = vk::DescriptorPoolSize::builder()
             .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .descriptor_count(swapchain_images_count)
             .build();
 
-        let pool_sizes = &[ubo_size, sampler_size];
+        let pool_sizes = &[sampler_size];
         let info = vk::DescriptorPoolCreateInfo::builder()
             .pool_sizes(pool_sizes)
             .max_sets(swapchain_images_count);
@@ -1336,7 +1534,7 @@ impl Model {
         &mut self,
         logical_device: &ash::Device,
         swapchain_images_count: usize,
-        uniform_buffers: &[UniformBuffer],
+        // uniform_buffers: &[UniformBuffer],
     ) -> Result<()> {
         (0..swapchain_images_count).enumerate().for_each(|(i, _)| {
             let image_info = &[vk::DescriptorImageInfo::builder()
@@ -1658,7 +1856,7 @@ impl ModelManager {
             model.update_descriptor_sets(
                 logical_device,
                 swapchain_images_count,
-                &self.buffer_allocator.uniform_buffers_to_allocate,
+                // &self.buffer_allocator.uniform_buffers_to_allocate,
             )?;
         }
 
@@ -1836,6 +2034,17 @@ impl Scene {
     pub fn load_models(&mut self) {
         self.model_manager.add_models(self.models.clone());
     }
+
+    pub unsafe fn update_terrain(
+        &self,
+        logical_device: &ash::Device,
+        command_buffer: vk::CommandBuffer,
+        image_index: usize,
+    ) {
+        self.terrain
+            .update(logical_device, command_buffer, image_index);
+    }
+
     pub unsafe fn draw_terrain(
         &self,
         logical_device: &ash::Device,

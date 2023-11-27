@@ -743,12 +743,39 @@ pub unsafe fn create_command_buffers(
         .collect::<Result<Vec<_>>>()
 }
 
+pub unsafe fn create_compute_command_buffers(
+    device: &ash::Device,
+    command_pool_sets: &[g_types::CommandPoolSet],
+    swapchain_images_count: usize,
+) -> Result<Vec<vk::CommandBuffer>> {
+    (0..swapchain_images_count)
+        .map(|index| {
+            let allocate_info = vk::CommandBufferAllocateInfo::builder()
+                .command_pool(command_pool_sets[index].compute)
+                .level(vk::CommandBufferLevel::PRIMARY)
+                .command_buffer_count(1);
+
+            let command_buffer = device.allocate_command_buffers(&allocate_info)?[0];
+
+            Ok(command_buffer)
+        })
+        .collect::<Result<Vec<_>>>()
+}
+
 type SemVec = Vec<vk::Semaphore>;
 type FenceVec = Vec<vk::Fence>;
 pub unsafe fn create_sync_objects(
     logical_device: &ash::Device,
     swapchain_images_count: usize,
-) -> Result<(SemVec, SemVec, FenceVec, FenceVec)> {
+) -> Result<(
+    SemVec,
+    SemVec,
+    FenceVec,
+    SemVec,
+    FenceVec,
+    FenceVec,
+    FenceVec,
+)> {
     let semaphore_info = vk::SemaphoreCreateInfo::builder();
 
     let image_available_semaphores = (0..MAX_FRAMES_IN_FLIGHT)
@@ -767,6 +794,14 @@ pub unsafe fn create_sync_objects(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
+    let compute_finished_semaphores = (0..MAX_FRAMES_IN_FLIGHT)
+        .map(|_| {
+            logical_device
+                .create_semaphore(&semaphore_info, None)
+                .map_err(|e| anyhow!("{}", e))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
     let fence_info = vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED);
 
     let in_flight_fences = (0..MAX_FRAMES_IN_FLIGHT)
@@ -777,7 +812,19 @@ pub unsafe fn create_sync_objects(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    let images_in_flight = (0..swapchain_images_count)
+    let compute_in_flight_fences = (0..MAX_FRAMES_IN_FLIGHT)
+        .map(|_| {
+            logical_device
+                .create_fence(&fence_info, None)
+                .map_err(|e| anyhow!("{}", e))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let render_images_in_flight = (0..swapchain_images_count)
+        .map(|_| vk::Fence::null())
+        .collect();
+
+    let compute_images_in_flight = (0..swapchain_images_count)
         .map(|_| vk::Fence::null())
         .collect();
 
@@ -785,7 +832,10 @@ pub unsafe fn create_sync_objects(
         image_available_semaphores,
         render_finished_semaphores,
         in_flight_fences,
-        images_in_flight,
+        compute_finished_semaphores,
+        compute_in_flight_fences,
+        render_images_in_flight,
+        compute_images_in_flight,
     ))
 }
 

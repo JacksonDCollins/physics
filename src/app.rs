@@ -99,12 +99,14 @@ impl App {
             render_engine.swapchain.images.len(),
         )?;
 
-        scene.terrain.create_pipeline(
+        scene.terrain.create_render_pipeline(
             &logical_device,
             msaa_samples,
             render_engine.pipeline.render_pass,
             render_engine.swapchain.extent,
         )?;
+
+        scene.terrain.create_compute_pipeline(&logical_device)?;
 
         scene.terrain.create_buffers(&logical_device)?;
 
@@ -194,7 +196,12 @@ impl App {
 
         scene
             .terrain
-            .update_descriptor_sets(&logical_device, render_engine.swapchain.images.len())?;
+            .update_render_descriptor_sets(&logical_device, render_engine.swapchain.images.len())?;
+
+        scene.terrain.update_compute_descriptor_sets(
+            &logical_device,
+            render_engine.swapchain.images.len(),
+        )?;
 
         // END HERE
         let input_engine = input::engine::InputEngine::create();

@@ -174,12 +174,6 @@ impl RenderEngine {
         scene: &mut g_objects::Scene,
         // model_manager: &mut g_objects::ModelManager,
     ) -> Result<()> {
-        logical_device.wait_for_fences(
-            &[self.presenter.in_flight_fences[frame]],
-            true,
-            u64::MAX,
-        )?;
-
         let result = self.swapchain.swapchain_loader.acquire_next_image(
             self.swapchain.swapchain,
             u64::MAX,
@@ -212,22 +206,69 @@ impl RenderEngine {
             Err(error) => return Err(anyhow!(error)),
         };
 
-        if !self.presenter.images_in_flight[image_index].is_null() {
+        //compute
+        if !self.presenter.compute_images_in_flight[image_index].is_null() {
             logical_device.wait_for_fences(
-                &[self.presenter.images_in_flight[image_index]],
+                &[self.presenter.compute_images_in_flight[image_index]],
                 true,
                 u64::MAX,
             )?;
         }
 
-        self.presenter.images_in_flight[image_index] = self.presenter.in_flight_fences[frame];
+        self.presenter.compute_images_in_flight[image_index] =
+            self.presenter.compute_in_flight_fences[frame];
 
-        // self.update_uniform_buffer(image_index, camera, model_manager)?;
+        logical_device.wait_for_fences(
+            &[self.presenter.compute_in_flight_fences[frame]],
+            true,
+            u64::MAX,
+        )?;
+
+        logical_device.reset_fences(&[self.presenter.compute_in_flight_fences[frame]])?;
+
+        self.update_compute_command_buffer(logical_device, image_index, scene)?;
+
+        let command_buffers = &[self.presenter.compute_command_buffers[image_index]];
+        let signal_semaphores = &[self.presenter.compute_finished_semaphores[frame]];
+        let submit_info = vk::SubmitInfo::builder()
+            .command_buffers(command_buffers)
+            .signal_semaphores(signal_semaphores)
+            .build();
+        logical_device.queue_submit(
+            self.queue_set.compute,
+            &[submit_info],
+            self.presenter.compute_in_flight_fences[frame],
+        )?;
+
+        //graphics
+        if !self.presenter.render_images_in_flight[image_index].is_null() {
+            logical_device.wait_for_fences(
+                &[self.presenter.render_images_in_flight[image_index]],
+                true,
+                u64::MAX,
+            )?;
+        }
+
+        self.presenter.render_images_in_flight[image_index] =
+            self.presenter.render_in_flight_fences[frame];
+
+        logical_device.wait_for_fences(
+            &[self.presenter.render_in_flight_fences[frame]],
+            true,
+            u64::MAX,
+        )?;
         self.update_command_buffer(logical_device, image_index, scene, camera)?;
 
-        let wait_semaphores = &[self.presenter.image_available_semaphores[frame]];
-        let wait_stages = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-        let command_buffers = &[self.presenter.command_buffers[image_index]];
+        let wait_semaphores = &[
+            self.presenter.compute_finished_semaphores[frame],
+            self.presenter.image_available_semaphores[frame],
+        ];
+
+        let wait_stages = &[
+            vk::PipelineStageFlags::VERTEX_INPUT,
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+        ];
+        let command_buffers = &[self.presenter.draw_command_buffers[image_index]];
         let signal_semaphores = &[self.presenter.render_finished_semaphores[frame]];
         let submit_info = vk::SubmitInfo::builder()
             .wait_semaphores(wait_semaphores)
@@ -236,12 +277,12 @@ impl RenderEngine {
             .signal_semaphores(signal_semaphores)
             .build();
 
-        logical_device.reset_fences(&[self.presenter.in_flight_fences[frame]])?;
+        logical_device.reset_fences(&[self.presenter.render_in_flight_fences[frame]])?;
 
         logical_device.queue_submit(
             self.queue_set.graphics,
             &[submit_info],
-            self.presenter.in_flight_fences[frame],
+            self.presenter.render_in_flight_fences[frame],
         )?;
 
         let swapchains = &[self.swapchain.swapchain];
@@ -307,6 +348,28 @@ impl RenderEngine {
 
     //     Ok(())
     // }
+    unsafe fn update_compute_command_buffer(
+        &mut self,
+        logical_device: &ash::Device,
+        image_index: usize,
+        scene: &g_objects::Scene,
+    ) -> Result<()> {
+        let command_pool = self.presenter.command_pool_sets[image_index].compute;
+        logical_device.reset_command_pool(command_pool, vk::CommandPoolResetFlags::empty())?;
+
+        let command_buffer = self.presenter.compute_command_buffers[image_index];
+
+        let info = vk::CommandBufferBeginInfo::builder()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+
+        logical_device.begin_command_buffer(command_buffer, &info)?;
+
+        scene.update_terrain(logical_device, command_buffer, image_index);
+
+        logical_device.end_command_buffer(command_buffer)?;
+
+        Ok(())
+    }
 
     unsafe fn update_command_buffer(
         &mut self,
@@ -318,7 +381,7 @@ impl RenderEngine {
         let command_pool = self.presenter.command_pool_sets[image_index].graphics;
         logical_device.reset_command_pool(command_pool, vk::CommandPoolResetFlags::empty())?;
 
-        let command_buffer = self.presenter.command_buffers[image_index];
+        let command_buffer = self.presenter.draw_command_buffers[image_index];
 
         let info = vk::CommandBufferBeginInfo::builder()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);

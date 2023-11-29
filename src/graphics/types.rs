@@ -23,7 +23,7 @@ pub struct IndexedVertex {
 #[repr(C, align(16))]
 #[derive(Copy, Clone, Debug, Serialize)]
 pub struct Vertex {
-    pos: Vec3,
+    pub pos: Vec3,
     normal: Vec3,
     tex_coord: Vec2,
 }

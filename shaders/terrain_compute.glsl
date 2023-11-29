@@ -34,12 +34,16 @@ void main() {
    // VertexesOut[index].position += vec3(0.0, 0.0, 0.0001);
 
 
-   for(int i=0;i<8;++i)
-   {
-      VertexesIn[i].position += vec3(0.0001, 0.0001, 0.0001);
-      // VertexesIn[i].normal += vec3(0.1, 0.1, 0.1);
-      // VertexesIn[i].texcoord += vec2(0.1, 0.1);
-   }
+   
+   VertexesIn[0].position += vec3(0.0001, 0.0001, 0.0001);
+   VertexesIn[1].position += vec3(0.0001, 0.0001, 0.0001);
+   VertexesIn[2].position += vec3(0.0001, 0.0001, 0.0001);
+   VertexesIn[3].position += vec3(0.0001, 0.0001, 0.0001);
+   VertexesIn[4].position += vec3(0.0001, 0.0001, 0.0001);
+   VertexesIn[5].position += vec3(0.0001, 0.0001, 0.0001);
+   VertexesIn[6].position += vec3(0.0001, 0.0001, 0.0001);
+
+   
    
 
 

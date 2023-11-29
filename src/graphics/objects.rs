@@ -532,6 +532,8 @@ impl<T: Clone> ComputeBuffer<T> {
     pub unsafe fn create(data: &[T]) -> Result<Self> {
         let size = std::mem::size_of::<T>() as u64 * data.len() as u64;
 
+        println!("size: {}", size);
+
         Ok(Self {
             data: data.into(),
             buffer: vk::Buffer::null(),
@@ -570,6 +572,7 @@ impl<T: Clone> ComputeBuffer<T> {
             )?;
 
             self.reqs = Some(logical_device.get_buffer_memory_requirements(self.buffer));
+            println!("reqs: {:?}", self.reqs);
         }
         Ok(())
     }
@@ -795,6 +798,7 @@ impl Terrain {
             indices.push(i as u32);
         }
 
+        println!("vertices: {:?}", vertices.len());
         let in_compute_buffer = ComputeBuffer::create(&vertices)?;
         // let out_compute_buffer = ComputeBuffer::create(&vertices)?;
 
@@ -906,6 +910,32 @@ impl Terrain {
             &[self.compute_descriptor_sets[image_index]],
             &[],
         );
+
+        // let mut t: Vec<g_types::Vertex> = Vec::with_capacity(self.in_compute_buffer.data.len());
+        // // let mut t: Vec<u8> = Vec::with_capacity(384);
+        // g_utils::memcpy(
+        //     self.buffer_memory_allocator
+        //         .vertex_index_memory_ptr
+        //         .add(self.in_compute_buffer.offset.unwrap() as usize)
+        //         .cast::<g_types::Vertex>(),
+        //     t.as_mut_ptr(),
+        //     self.in_compute_buffer.data.len(),
+        // );
+
+        // println!("t: {:?} {}", t, self.in_compute_buffer.data.len());
+
+        let mut v: Vec<g_types::Vec3> = Vec::new();
+
+        for _ in 0..self.in_compute_buffer.data.len() + 1 {
+            let e = *self
+                .buffer_memory_allocator
+                .vertex_index_memory_ptr
+                .add(self.in_compute_buffer.offset.unwrap() as usize)
+                .cast::<g_types::Vertex>();
+            v.push(e.pos);
+        }
+
+        println!("{:#?}", v);
 
         logical_device.cmd_dispatch(
             command_buffer,

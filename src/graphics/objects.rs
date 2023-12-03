@@ -705,12 +705,10 @@ impl Terrain {
 
         let mut render_info = g_types::DEFAULT_RENDER_INFO;
 
-        render_info.polygon_info.front_face = vk::FrontFace::CLOCKWISE;
-
         let mut rand = rand::thread_rng();
 
-        let width = 2;
-        let length = 1;
+        let width = 1;
+        let length = 2;
         let height_list = (0..width)
             .map(|_| (0..length).map(|_| 1.).collect::<Vec<_>>())
             .collect::<Vec<_>>();
@@ -733,18 +731,6 @@ impl Terrain {
                         ),
                         Vertex::new(
                             g_types::vec3(
-                                i as f32,
-                                j as f32 + 1.,
-                                *height_list
-                                    .get(i)
-                                    .and_then(|v| v.get(j.max(1) - 1))
-                                    .unwrap_or(&0.0),
-                            ),
-                            g_types::Vec3::unit_z(),
-                            g_types::Vec2::zero(),
-                        ),
-                        Vertex::new(
-                            g_types::vec3(
                                 i as f32 + 1.,
                                 j as f32,
                                 *height_list.get(i).and_then(|v| v.get(j)).unwrap_or(&0.0),
@@ -754,20 +740,8 @@ impl Terrain {
                         ),
                         Vertex::new(
                             g_types::vec3(
-                                i as f32,
-                                j as f32 + 1.,
-                                *height_list
-                                    .get(i)
-                                    .and_then(|v| v.get(j.max(1) - 1))
-                                    .unwrap_or(&0.0),
-                            ),
-                            g_types::Vec3::unit_z(),
-                            g_types::Vec2::zero(),
-                        ),
-                        Vertex::new(
-                            g_types::vec3(
                                 i as f32 + 1.,
-                                j as f32 + 1.0,
+                                j as f32 + 1.,
                                 *height_list
                                     .get(i.max(1) - 1)
                                     .and_then(|v| v.get(j.max(1) - 1))
@@ -778,9 +752,12 @@ impl Terrain {
                         ),
                         Vertex::new(
                             g_types::vec3(
-                                i as f32 + 1.,
-                                j as f32,
-                                *height_list.get(i).and_then(|v| v.get(j)).unwrap_or(&0.0),
+                                i as f32,
+                                j as f32 + 1.,
+                                *height_list
+                                    .get(i)
+                                    .and_then(|v| v.get(j.max(1) - 1))
+                                    .unwrap_or(&0.0),
                             ),
                             g_types::Vec3::unit_z(),
                             g_types::Vec2::zero(),
@@ -793,9 +770,13 @@ impl Terrain {
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
 
-        for i in 0..vertex_list.len() {
-            vertices.push(vertex_list[i]);
-            indices.push(i as u32);
+        for chunk in vertex_list.chunks(4) {
+            vertices.extend(chunk);
+            indices.extend(
+                [0, 1, 2, 2, 3, 0]
+                    .iter()
+                    .map(|i| i + vertices.len() as u32 - 4),
+            );
         }
 
         println!("vertices: {:?}", vertices.len());
@@ -911,31 +892,18 @@ impl Terrain {
             &[],
         );
 
-        // let mut t: Vec<g_types::Vertex> = Vec::with_capacity(self.in_compute_buffer.data.len());
-        // // let mut t: Vec<u8> = Vec::with_capacity(384);
-        // g_utils::memcpy(
-        //     self.buffer_memory_allocator
+        // let mut v: Vec<g_types::Vec3> = Vec::new();
+
+        // for _ in 0..self.in_compute_buffer.data.len() + 1 {
+        //     let e = *self
+        //         .buffer_memory_allocator
         //         .vertex_index_memory_ptr
         //         .add(self.in_compute_buffer.offset.unwrap() as usize)
-        //         .cast::<g_types::Vertex>(),
-        //     t.as_mut_ptr(),
-        //     self.in_compute_buffer.data.len(),
-        // );
+        //         .cast::<g_types::Vertex>();
+        //     v.push(e.pos);
+        // }
 
-        // println!("t: {:?} {}", t, self.in_compute_buffer.data.len());
-
-        let mut v: Vec<g_types::Vec3> = Vec::new();
-
-        for _ in 0..self.in_compute_buffer.data.len() + 1 {
-            let e = *self
-                .buffer_memory_allocator
-                .vertex_index_memory_ptr
-                .add(self.in_compute_buffer.offset.unwrap() as usize)
-                .cast::<g_types::Vertex>();
-            v.push(e.pos);
-        }
-
-        println!("{:#?}", v);
+        // println!("{:#?}", v);
 
         logical_device.cmd_dispatch(
             command_buffer,

@@ -223,7 +223,6 @@ impl TextureMemoryAllocator {
 pub struct BufferMemoryAllocator {
     pub vertex_index_memory: vk::DeviceMemory,
     pub vertex_index_buffer: vk::Buffer,
-    pub vertex_index_memory_ptr: *mut c_void,
     pub uniform_memory: vk::DeviceMemory,
     pub uniform_buffer: vk::Buffer,
     pub uniform_memory_ptr: *mut c_void,
@@ -240,7 +239,6 @@ impl BufferMemoryAllocator {
         Ok(Self {
             vertex_index_memory: vk::DeviceMemory::null(),
             vertex_index_buffer: vk::Buffer::null(),
-            vertex_index_memory_ptr: std::ptr::null_mut(),
             uniform_memory: vk::DeviceMemory::null(),
             uniform_buffer: vk::Buffer::null(),
             uniform_memory_ptr: std::ptr::null_mut(),
@@ -344,7 +342,7 @@ impl BufferMemoryAllocator {
             self.uniform_memory_ptr = memory_ptr;
         }
 
-        if self.vertex_index_memory_ptr.is_null() {
+        if self.vertex_index_buffer.is_null() {
             let (vertex_index_buffer, vertex_index_memory, _) = g_utils::create_buffer_and_memory(
                 instance,
                 logical_device,
@@ -353,19 +351,11 @@ impl BufferMemoryAllocator {
                 vk::BufferUsageFlags::TRANSFER_DST
                     | vk::BufferUsageFlags::VERTEX_BUFFER
                     | vk::BufferUsageFlags::INDEX_BUFFER,
-                vk::MemoryPropertyFlags::DEVICE_LOCAL | vk::MemoryPropertyFlags::HOST_VISIBLE,
-            )?;
-
-            let memory_ptr = logical_device.map_memory(
-                vertex_index_memory,
-                0,
-                size,
-                vk::MemoryMapFlags::empty(),
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
             )?;
 
             self.vertex_index_buffer = vertex_index_buffer;
             self.vertex_index_memory = vertex_index_memory;
-            self.vertex_index_memory_ptr = memory_ptr;
         }
         Ok(())
     }

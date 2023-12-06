@@ -703,14 +703,18 @@ impl Terrain {
         // let vertex_buffer = VertexBuffer::create(&vertices)?;
         // let index_buffer = IndexBuffer::create(&indices)?;
 
-        let mut render_info = g_types::DEFAULT_RENDER_INFO;
+        let render_info = g_types::DEFAULT_RENDER_INFO;
 
         let mut rand = rand::thread_rng();
 
-        let width = 1;
-        let length = 2;
+        let width = 10;
+        let length = 10;
         let height_list = (0..width)
-            .map(|_| (0..length).map(|_| 1.).collect::<Vec<_>>())
+            .map(|_| {
+                (0..length)
+                    .map(|_| rand.gen_range(0.0..=1.0))
+                    .collect::<Vec<_>>()
+            })
             .collect::<Vec<_>>();
 
         let vertex_list = (0..width)

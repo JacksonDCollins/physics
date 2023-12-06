@@ -14,17 +14,11 @@ pub type Degf32 = cgmath::Deg<f32>;
 
 #[repr(C, align(16))]
 #[derive(Copy, Clone, Debug, Serialize)]
-pub struct IndexedVertex {
-    pos: Vec3,
-    normal: Vec3,
-    tex_coord: Vec2,
-}
-
-#[repr(C, align(16))]
-#[derive(Copy, Clone, Debug, Serialize)]
 pub struct Vertex {
     pub pos: Vec3,
+    _padding: u32,
     normal: Vec3,
+    _padding2: u32,
     tex_coord: Vec2,
 }
 
@@ -32,8 +26,19 @@ impl Vertex {
     pub const fn new(pos: Vec3, normal: Vec3, tex_coord: Vec2) -> Self {
         Self {
             pos,
+            _padding: 0,
             normal,
+            _padding2: 0,
             tex_coord,
+        }
+    }
+
+    pub fn offset_at(location: u32) -> u32 {
+        match location {
+            0 => 0,
+            1 => std::mem::size_of::<Vec3>() as u32 + std::mem::size_of::<u32>() as u32,
+            2 => std::mem::size_of::<Vec3>() as u32 * 2 + std::mem::size_of::<u32>() as u32 * 2,
+            _ => panic!("Invalid location: {}", location),
         }
     }
 }
@@ -181,19 +186,19 @@ impl AttributeDescriptions for Vertex {
                 .binding(binding)
                 .location(location)
                 .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(0)
+                .offset(Vertex::offset_at(location))
                 .build(),
             vk::VertexInputAttributeDescription::builder()
                 .binding(binding)
                 .location(location + 1)
                 .format(vk::Format::R32G32B32_SFLOAT)
-                .offset(std::mem::size_of::<Vec3>() as u32)
+                .offset(Vertex::offset_at(location + 1))
                 .build(),
             vk::VertexInputAttributeDescription::builder()
                 .binding(binding)
                 .location(location + 2)
                 .format(vk::Format::R32G32_SFLOAT)
-                .offset((std::mem::size_of::<Vec3>() + std::mem::size_of::<Vec3>()) as u32)
+                .offset(Vertex::offset_at(location + 2))
                 .build(),
         ]
     }

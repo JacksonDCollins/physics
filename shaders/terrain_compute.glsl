@@ -15,7 +15,7 @@ layout( binding = 0) buffer VertexSSBOIn {
 //    Vertex VertexesOut[ ];
 // };
 
-layout (local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout (local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 void main() {
    uint index = gl_GlobalInvocationID.x;  
@@ -25,28 +25,9 @@ void main() {
 
    // debugPrintfEXT("leng = %d\n", VertexesIn.length());
 
-
-   
-   // Vertex vertexIn = VertexesIn[index];
-   // vertexIn.position += vec3(0.0, 0.0, 1.0);
-
-   // VertexesOut[index] = vertexIn;
-   // VertexesOut[index].position += vec3(0.0, 0.0, 0.0001);
-
-
-   
-   VertexesIn[0].position += vec3(0.0001, 0.0001, 0.0001);
-   VertexesIn[1].position += vec3(0.0001, 0.0001, 0.0001);
-   VertexesIn[2].position += vec3(0.0001, 0.0001, 0.0001);
-   VertexesIn[3].position += vec3(0.0001, 0.0001, 0.0001);
-   VertexesIn[4].position += vec3(0.0001, 0.0001, 0.0001);
-   VertexesIn[5].position += vec3(0.0001, 0.0001, 0.0001);
-   VertexesIn[6].position += vec3(0.0001, 0.0001, 0.0001);
-
-   
-   
-
-
+   Vertex vertexIn = VertexesIn[index];
+   // vertexIn.position += vec3(0.0, 0.0, 0.0001);
+   VertexesIn[index] = vertexIn;
 
    // debugPrintfEXT("vertex.position = %f %f %f\n", vertex.position.x, vertex.position.y, vertex.position.z);
 }
